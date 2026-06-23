@@ -165,6 +165,46 @@ fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
     Ok(segs)
 }
 
+#[derive(serde::Serialize)]
+struct PhonemeHit {
+    id: String,
+    title: String,
+    snippet: String,
+}
+
+/// Semantic search across the whole Phoneme archive (best-effort, via the CLI).
+#[tauri::command]
+fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
+    if query.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let out = run_phoneme(&["--json", "search", &query, "--limit", "10"])?;
+    let mut hits = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let rec = v.get("recording").unwrap_or(&v);
+        let id = rec.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let title = rec.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        let snippet: String = rec
+            .get("summary")
+            .and_then(|x| x.as_str())
+            .or_else(|| rec.get("transcript").and_then(|x| x.as_str()))
+            .unwrap_or_default()
+            .chars()
+            .take(140)
+            .collect();
+        hits.push(PhonemeHit { id, title, snippet });
+    }
+    Ok(hits)
+}
+
 /// Best-effort standalone transcript: fetch YouTube's own caption track via the
 /// InnerTube player endpoint (no auth, no yt-dlp). Fragile by nature — many videos
 /// have no captions, and YouTube changes this — so failures are normal; the UI then
@@ -286,6 +326,7 @@ pub fn run() {
             phoneme_available,
             phoneme_import,
             phoneme_segments,
+            phoneme_search,
             youtube_captions,
         ])
         .run(tauri::generate_context!())

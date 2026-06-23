@@ -1,7 +1,7 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import { api, type VideoWithCount, type Note, type SearchHit, type Segment } from "./api";
+import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit } from "./api";
 import { Player } from "./player";
 import { parseVideoId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
@@ -50,6 +50,7 @@ export class App extends LitElement {
   @state() private dur = 0;
   @state() private searchOpen = false;
   @state() private searchResults: SearchHit[] = [];
+  @state() private phonemeHits: PhonemeHit[] = [];
   @state() private settingsOpen = false;
   @state() private status = "";
   @state() private selectedId: string | null = null;
@@ -212,7 +213,17 @@ export class App extends LitElement {
       this.renderRoot.querySelector(".note.selected")?.scrollIntoView({ block: "nearest" }));
   }
 
-  private async runSearch(q: string) { this.searchResults = q.trim() ? await api.searchNotes(q) : []; }
+  private async runSearch(q: string) {
+    this.searchResults = q.trim() ? await api.searchNotes(q) : [];
+    if (q.trim() && this.phonemeOk) { try { this.phonemeHits = await api.phonemeSearch(q); } catch { this.phonemeHits = []; } }
+    else this.phonemeHits = [];
+  }
+  private openPhonemeHit(h: PhonemeHit) {
+    const map = this.recMap();
+    const vid = Object.keys(map).find((k) => map[k] === h.id);
+    if (vid) { this.searchOpen = false; this.loadVideo(vid); }
+    else this.flash("That Phoneme recording isn't linked to a video here.");
+  }
   private async openHit(h: SearchHit) {
     this.searchOpen = false;
     await this.loadVideo(h.video_id);
@@ -382,7 +393,7 @@ export class App extends LitElement {
           <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
             @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
           <button class="primary" @click=${() => this.addFromInput()}>Load</button>
-          <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => { this.searchOpen = true; this.searchResults = []; }}>${I.search}</button>
+          <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => { this.searchOpen = true; this.searchResults = []; this.phonemeHits = []; }}>${I.search}</button>
           <button class="ghost" title="Settings" aria-label="Settings" @click=${() => (this.settingsOpen = true)}>${I.gear}</button>
         </div>
 
@@ -483,7 +494,11 @@ export class App extends LitElement {
             <span class="ts">${formatTime(h.t_secs)}</span>
             <span class="grow"><span class="htitle">${h.video_title || h.video_id}</span> — ${h.content}</span>
           </button>`)}
-          ${this.searchResults.length === 0 ? html`<div class="muted sm" style="padding:8px">No matches.</div>` : nothing}
+          ${this.phonemeHits.length ? html`<div class="src-label">From Phoneme</div>
+            ${this.phonemeHits.map((h) => html`<button class="hit" @click=${() => this.openPhonemeHit(h)}>
+              <span class="grow"><span class="htitle">${h.title || h.id}</span>${h.snippet ? html` — ${h.snippet}` : nothing}</span>
+            </button>`)}` : nothing}
+          ${this.searchResults.length === 0 && this.phonemeHits.length === 0 ? html`<div class="muted sm" style="padding:8px">No matches.</div>` : nothing}
         </div>
       </div>
     </div>`;
@@ -675,6 +690,7 @@ export class App extends LitElement {
     .hit { display:flex; gap:10px; text-align:left; align-items:baseline; background:transparent; border:1px solid transparent; border-radius:var(--r-sm); padding:9px 10px; width:100%; }
     .hit:hover { background:var(--hover); }
     .hit .htitle { font-weight:600; }
+    .src-label { font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--fg-faded); padding:10px 10px 3px; border-top:1px solid var(--border-subtle); margin-top:4px; }
   `;
 }
 
