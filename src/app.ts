@@ -972,7 +972,7 @@ export class App extends LitElement {
     main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; }
     .topbar { display:flex; gap:8px; align-items:center; }
     .topbar input { flex:1; }
-    .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; }
+    .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; margin-right:12px; }
     .ham:hover { background:var(--hover); color:var(--fg-default); }
     .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:12px; transition:background var(--ui-motion-fast); }
     .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
