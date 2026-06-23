@@ -37,6 +37,8 @@ const I = {
   pin: svg`<svg viewBox="0 0 24 24" class="i"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6zM12 16v5"/></svg>`,
   replace: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg>`,
   expand: svg`<svg viewBox="0 0 24 24" class="i"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg>`,
+  film: svg`<svg viewBox="0 0 24 24" class="i"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16M16 4v16"/></svg>`,
+  captions: svg`<svg viewBox="0 0 24 24" class="i"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11h3M7 14h6M14 11h3"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -82,6 +84,7 @@ export class App extends LitElement {
   @state() private sortDesc = true;
   @state() private selected = new Set<string>();
   @state() private fsNote: { t: number } | null = null;
+  @state() private titleEditing = false;
   @state() private phonemeOk = false;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private rate = 1;
@@ -218,6 +221,12 @@ export class App extends LitElement {
     await this.refreshNotes(); await this.refreshVideos();
   }
   private fsCancel() { this.fsNote = null; if (this.settings.autopause) this.player?.play(); }
+  private async saveTitle(v: string) {
+    this.titleEditing = false;
+    const t = v.trim(); const cur = this.current;
+    if (!cur || !t || t === cur.title) return;
+    await api.setVideoTitle(cur.id, t); await this.refreshVideos();
+  }
   private async commit(text: string) {
     const e = this.editing; if (!e) return;
     const isNew = !e.id;
@@ -512,11 +521,11 @@ export class App extends LitElement {
           ${!this.folds.lib ? html`
             <button class="sidebar-item ${this.libView === "all" && !this.tagFilter ? "on" : ""}"
               @click=${() => { this.libView = "all"; this.tagFilter = null; }}>
-              <span class="si-label">All videos</span><span class="count">${this.videos.length}</span>
+              <span class="si-icon">${I.film}</span><span class="si-label">All videos</span><span class="count">${this.videos.length}</span>
             </button>
             <button class="sidebar-item ${this.libView === "transcript" ? "on" : ""}"
               @click=${() => { this.libView = "transcript"; this.tagFilter = null; }}>
-              <span class="si-label">With transcript</span><span class="count">${transcriptCount}</span>
+              <span class="si-icon">${I.captions}</span><span class="si-label">With transcript</span><span class="count">${transcriptCount}</span>
             </button>` : nothing}
         </div>
         ${tags.length ? html`<div class="section">
@@ -526,7 +535,7 @@ export class App extends LitElement {
           ${!this.folds.tags ? tags.map((t) => html`
             <button class="sidebar-item ${this.tagFilter === t ? "on" : ""}"
               @click=${() => (this.tagFilter = this.tagFilter === t ? null : t)}>
-              <span class="dot"></span><span class="si-label">${t}</span>
+              <span class="si-icon tag-hash">#</span><span class="si-label">${t}</span>
               <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
             </button>`) : nothing}
         </div>` : nothing}
@@ -570,7 +579,11 @@ export class App extends LitElement {
         ${this.current ? html`<div class="nowplaying" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
           <button class="ham" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
           <div class="np-main">
-            <div class="np-title" title=${this.current.title || this.current.id}>${this.current.title || this.current.id}</div>
+            ${this.titleEditing
+              ? html`<input class="np-title-edit" type="text" .value=${this.current.title || ""}
+                  @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { e.preventDefault(); this.saveTitle((e.target as HTMLInputElement).value); } else if (e.key === "Escape") { e.preventDefault(); this.titleEditing = false; } }}
+                  @blur=${(e: Event) => this.saveTitle((e.target as HTMLInputElement).value)} />`
+              : html`<div class="np-title" title="Click to rename" @click=${() => { this.titleEditing = true; this.updateComplete.then(() => (this.renderRoot.querySelector(".np-title-edit") as HTMLInputElement)?.select()); }}>${this.current.title || this.current.id}</div>`}
             <div class="np-meta">${this.current.channel || ""}${(this.dur || this.current.duration) ? html` · ${formatTime(this.dur || this.current.duration || 0)}` : nothing}</div>
           </div>
           <div class="np-actions">
@@ -652,7 +665,7 @@ export class App extends LitElement {
       ${this.cheatOpen ? this.renderCheat() : nothing}
       ${this.findReplaceOpen ? this.renderFindReplace() : nothing}
       ${this.toasts.length ? html`<div class="toasts" role="status" aria-live="polite">
-        ${this.toasts.map((t) => html`<div class="toast ${t.kind}">${t.msg}</div>`)}
+        ${this.toasts.map((t) => html`<div class="toast ${t.kind}"><span class="ti">${t.kind === "ok" ? "✓" : t.kind === "err" ? "✕" : "i"}</span><span>${t.msg}</span></div>`)}
       </div>` : nothing}
     `;
   }
@@ -904,10 +917,14 @@ export class App extends LitElement {
     .chev.open { transform:rotate(90deg); }
     .sidebar-item { width:100%; display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:var(--r-sm); background:none; border:1px solid transparent; color:var(--fg-muted); cursor:pointer; font-size:12.5px; transition:background var(--ui-motion-fast), color var(--ui-motion-fast); }
     .sidebar-item:hover { background:var(--hover); color:var(--fg-default); }
-    .sidebar-item.on { background:var(--tint); color:var(--accent); }
+    .sidebar-item.on { background:var(--tint); color:var(--accent); font-weight:500; }
+    .sidebar-item .si-icon { flex:0 0 auto; width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center; color:var(--fg-faded); }
+    .sidebar-item .si-icon .i { width:15px; height:15px; }
+    .sidebar-item .si-icon.tag-hash { color:var(--accent); font-size:14px; font-weight:700; }
+    .sidebar-item.on .si-icon, .sidebar-item:hover .si-icon { color:var(--accent); }
     .sidebar-item .si-label { flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .sidebar-item .count { font-size:11px; color:var(--fg-faded); background:var(--bg-deep); border-radius:999px; padding:1px 7px; min-width:20px; text-align:center; }
-    .sidebar-item.on .count { color:var(--accent); }
+    .sidebar-item .count { margin-left:auto; flex:0 0 auto; min-width:20px; padding:1px 7px; border-radius:999px; text-align:center; font-size:11px; line-height:15px; font-variant-numeric:tabular-nums; color:var(--fg-faded); background:color-mix(in srgb, var(--fg-faded) 10%, transparent); }
+    .sidebar-item.on .count, .sidebar-item:hover .count { color:color-mix(in srgb, var(--accent) 75%, var(--fg-default)); background:color-mix(in srgb, var(--accent) 16%, transparent); }
     .sidebar-item .dot { width:8px; height:8px; border-radius:999px; background:var(--accent); opacity:.85; flex:0 0 auto; }
     .tagbar { display:flex; flex-wrap:wrap; gap:5px; padding:0 12px 8px; }
     .chip { font:inherit; font-size:11.5px; padding:3px 9px; border-radius:999px; cursor:pointer; background:var(--bg-elevated);
@@ -951,7 +968,9 @@ export class App extends LitElement {
     .nowplaying { display:flex; align-items:center; gap:12px; }
     .np-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
     .np-main { flex:1; min-width:0; }
-    .np-title { font-weight:650; font-size:15.5px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .np-title { font-weight:650; font-size:15.5px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:text; }
+    .np-title:hover { color:var(--accent); }
+    .np-title-edit { font-weight:650; font-size:15.5px; letter-spacing:-.01em; width:100%; background:var(--bg-deep); border:1px solid var(--accent); border-radius:var(--r-sm); padding:2px 8px; color:var(--fg-default); }
     .np-meta { font-size:12px; color:var(--fg-faded); margin-top:1px; }
     .np-link { color:var(--fg-muted); font-size:12px; cursor:pointer; flex:0 0 auto; }
     .np-link:hover { color:var(--accent); }
@@ -975,10 +994,12 @@ export class App extends LitElement {
     .kbd { font-size:11px; color:color-mix(in srgb, var(--accent-fg) 72%, transparent); font-weight:600; padding-left:2px; }
     .status { color:var(--fg-muted); font-size:12px; white-space:nowrap; }
     .toasts { position:fixed; right:16px; bottom:16px; z-index:50; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
-    .toast { background:var(--bg-elevated); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:var(--r-sm); padding:9px 13px; font-size:13px; color:var(--fg-default); box-shadow:0 10px 30px rgba(0,0,0,.5); max-width:340px; animation:toast-in var(--ui-motion) ease; }
+    .toast { display:flex; align-items:center; gap:10px; background:var(--bg-elevated); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:var(--r-sm); padding:9px 13px; font-size:13px; font-weight:500; color:var(--fg-default); box-shadow:0 10px 30px rgba(0,0,0,.5); max-width:360px; animation:toast-in var(--ui-motion) cubic-bezier(.34,1.26,.64,1) both; }
+    .toast .ti { flex:0 0 auto; width:18px; height:18px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; background:var(--accent); color:var(--bg-deep); }
+    .toast.ok .ti { background:var(--ok); } .toast.err .ti { background:var(--err); }
     .toast.ok { border-left-color:var(--ok); }
     .toast.err { border-left-color:var(--err); }
-    @keyframes toast-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+    @keyframes toast-in { from { opacity:0; transform:translateX(calc(100% + 24px)); } to { opacity:1; transform:none; } }
     details.menu { position:relative; flex:0 0 auto; }
     details.menu > summary { list-style:none; cursor:pointer; display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
     details.menu > summary::-webkit-details-marker { display:none; }
