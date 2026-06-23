@@ -28,6 +28,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["msi"],
     "icon": [
       "icons/32x32.png",
@@ -39,5 +40,13 @@
     "category": "Productivity",
     "shortDescription": "Timestamped notes on YouTube videos",
     "longDescription": "A local-first desktop app for taking timestamped notes on YouTube videos."
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/namefailed/youtube-note-thing/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIzMjgxQjVGRjVCQjE5NzkKUldSNUdidjFYeHNvSXh6SExyTjhXRTZZWXJEbVMrUmN3M0VlL0VjRWxmOUlhSk91b3VMZ3RoUzgK"
+    }
   }
 }

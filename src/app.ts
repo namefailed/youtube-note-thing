@@ -6,6 +6,7 @@ import { Player } from "./player";
 import { parseVideoId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { check } from "@tauri-apps/plugin-updater";
 
 // Lazy + guarded: outside the Tauri runtime (e.g. a browser preview) this is
 // absent, and the app must still render rather than fail to define the element.
@@ -37,6 +38,12 @@ const I = {
   link: svg`<svg viewBox="0 0 24 24" class="i"><path d="M10.6 13.4a4 4 0 0 0 5.7 0l2.4-2.4a4 4 0 1 0-5.7-5.7l-1.1 1.1"/><path d="M13.4 10.6a4 4 0 0 0-5.7 0l-2.4 2.4a4 4 0 1 0 5.7 5.7l1.1-1.1"/></svg>`,
   gear: svg`<svg viewBox="0 0 24 24" class="i"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.9 7.9 0 0 0 0-2l2-1.6-2-3.4-2.4 1a8 8 0 0 0-1.7-1l-.4-2.6h-4l-.4 2.6a8 8 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.9 7.9 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a8 8 0 0 0 1.7 1l.4 2.6h4l.4-2.6a8 8 0 0 0 1.7-1l2.4 1 2-3.4z"/></svg>`,
 };
+
+const FOCUSABLE =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+function isVisible(el: HTMLElement): boolean {
+  return el.checkVisibility ? el.checkVisibility() : el.offsetParent !== null;
+}
 
 interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; }
 type Editing = { id?: string; t: number; draft: string } | null;
@@ -223,39 +230,39 @@ export class App extends LitElement {
   }
   private openPhonemeHit(h: PhonemeHit) {
     const vid = this.videos.find((v) => v.ext_ref === h.id)?.id;
-    if (vid) { this.searchOpen = false; this.loadVideo(vid); }
+    if (vid) { this.closeModal(); this.loadVideo(vid); }
     else this.flash("That Phoneme recording isn't linked to a video here.");
   }
 
   // ── Modal focus management (a11y) ────────────────────────────────────────
+  private focusables(): HTMLElement[] {
+    const panel = this.renderRoot.querySelector(".overlay .panel") as HTMLElement | null;
+    if (!panel) return [];
+    return [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(isVisible);
+  }
   private openModal(which: "search" | "settings") {
     this.lastFocus = ((this.renderRoot as ShadowRoot).activeElement as HTMLElement) ?? null;
     if (which === "search") { this.searchResults = []; this.phonemeHits = []; this.searchOpen = true; }
     else this.settingsOpen = true;
-    this.updateComplete.then(() => {
-      const panel = this.renderRoot.querySelector(".overlay .panel") as HTMLElement | null;
-      panel?.querySelector<HTMLElement>("input,select,button,a[href],textarea,[tabindex]")?.focus();
-    });
+    this.updateComplete.then(() => this.focusables()[0]?.focus());
   }
   private closeModal() {
     this.searchOpen = false; this.settingsOpen = false;
-    this.updateComplete.then(() => this.lastFocus?.focus());
+    const target = this.lastFocus; this.lastFocus = null;
+    this.updateComplete.then(() => { try { target?.focus(); } catch { /* trigger gone */ } });
   }
   private trapTab(e: KeyboardEvent) {
     if (e.key !== "Tab") return;
-    const panel = this.renderRoot.querySelector(".overlay .panel") as HTMLElement | null;
-    if (!panel) return;
-    const items = [...panel.querySelectorAll<HTMLElement>(
-      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
-    )].filter((el) => el.offsetParent !== null);
+    const items = this.focusables();
     if (!items.length) return;
     const first = items[0], last = items[items.length - 1];
-    const active = (this.renderRoot as ShadowRoot).activeElement;
-    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    const active = (this.renderRoot as ShadowRoot).activeElement as HTMLElement | null;
+    if (!active || !items.includes(active)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
   }
   private async openHit(h: SearchHit) {
-    this.searchOpen = false;
+    this.closeModal();
     await this.loadVideo(h.video_id);
     setTimeout(() => this.seek(h.t_secs), 900);
   }
@@ -333,6 +340,16 @@ export class App extends LitElement {
     this.requestUpdate();
   }
   private flash(m: string) { this.status = m; setTimeout(() => (this.status = ""), 2500); }
+  private async checkUpdates() {
+    this.flash("Checking for updates…");
+    try {
+      const update = await check();
+      if (!update) { this.flash("You're on the latest version"); return; }
+      this.flash(`Downloading update ${update.version}…`);
+      await update.downloadAndInstall();
+      this.flash("Update installed — restart to apply");
+    } catch (e) { this.flash(`Update check failed: ${e}`); }
+  }
   private changeRate(d: number) {
     if (!this.player) return;
     const r = Math.min(3, Math.max(0.25, +(this.player.getRate() + d).toFixed(2)));
@@ -399,8 +416,9 @@ export class App extends LitElement {
     const filtered = this.displayed();
     const tags = this.allTags();
     const vids = this.tagFilter ? this.videos.filter((v) => v.tags.includes(this.tagFilter!)) : this.videos;
+    const trapped = this.searchOpen || this.settingsOpen;
     return html`
-      <header class="titlebar" data-tauri-drag-region>
+      <header class="titlebar" data-tauri-drag-region ?inert=${trapped}>
         <div class="tb-left" data-tauri-drag-region>
           <button class="tb-btn" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
           <span class="tb-title"><span class="dot"></span> youtube-note-thing</span>
@@ -412,7 +430,7 @@ export class App extends LitElement {
         </div>
       </header>
 
-      <aside>
+      <aside ?inert=${trapped}>
         <div class="label">Library</div>
         ${tags.length ? html`<div class="tagbar">
           <button class="chip ${!this.tagFilter ? "on" : ""}" @click=${() => (this.tagFilter = null)}>All</button>
@@ -433,7 +451,7 @@ export class App extends LitElement {
         </div>
       </aside>
 
-      <main>
+      <main ?inert=${trapped}>
         <div class="topbar">
           ${!this.currentId ? html`
             <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
@@ -535,7 +553,7 @@ export class App extends LitElement {
   private renderSearch() {
     return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Search notes" @click=${(e: Event) => e.stopPropagation()}>
-        <div class="sbar">${I.search}<input type="text" placeholder="Search all notes…" autofocus
+        <div class="sbar">${I.search}<input type="text" placeholder="Search all notes…"
           @input=${(e: Event) => this.runSearch((e.target as HTMLInputElement).value)} /></div>
         <div class="results">
           ${this.searchResults.map((h) => html`<button class="hit" @click=${() => this.openHit(h)}>
@@ -576,6 +594,8 @@ export class App extends LitElement {
             <label class="btn grow" style="justify-content:center">Import JSON
               <input type="file" accept="application/json" hidden @change=${(e: Event) => this.importJson(e)} /></label>
           </div></div>
+        <div class="field"><span>Updates</span>
+          <button @click=${() => this.checkUpdates()}>Check for updates</button></div>
         <div class="hint muted sm">Shortcuts: <b>Alt+N</b> note · <b>Space/K</b> play · <b>J/L</b> ±10s · <b>←/→</b> ±5s · <b>M</b> mute · <b>F</b> fullscreen · <b>0–9</b> seek · <b>↑/↓</b> select note</div>
       </div>
     </div>`;

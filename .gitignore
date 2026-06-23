@@ -9,6 +9,9 @@ target/
 # Tauri
 src-tauri/target/
 
+# Updater signing keys — NEVER commit the private key
+.keys/
+
 # Environment
 .env
 .env.local
