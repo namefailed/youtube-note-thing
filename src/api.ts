@@ -2,11 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 export interface VideoWithCount {
   id: string; title: string; channel: string | null; url: string;
-  duration: number | null; last_pos_secs: number; manual_order: boolean; note_count: number;
+  duration: number | null; last_pos_secs: number; manual_order: boolean; note_count: number; tags: string[];
 }
 export interface Video {
   id: string; title: string; channel: string | null; url: string;
-  duration: number | null; last_pos_secs: number; manual_order: boolean;
+  duration: number | null; last_pos_secs: number; manual_order: boolean; tags: string[];
 }
 export interface Note {
   id: string; video_id: string; t_secs: number; content: string; order_index: number;
@@ -21,6 +21,7 @@ export const api = {
   upsertVideo: (id: string, url: string) => invoke<Video>("upsert_video", { id, url }),
   setVideoTitle: (id: string, title: string) => invoke<void>("set_video_title", { id, title }),
   setLastPos: (id: string, secs: number) => invoke<void>("set_last_pos", { id, secs }),
+  setVideoTags: (id: string, tags: string[]) => invoke<void>("set_video_tags", { id, tags }),
   deleteVideo: (id: string) => invoke<void>("delete_video", { id }),
   listNotes: (videoId: string) => invoke<Note[]>("list_notes", { videoId }),
   createNote: (videoId: string, tSecs: number, content: string) =>

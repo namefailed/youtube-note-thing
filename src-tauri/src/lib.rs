@@ -31,6 +31,11 @@ async fn set_last_pos(db: State<'_, Db>, id: String, secs: f64) -> Result<(), St
 }
 
 #[tauri::command]
+async fn set_video_tags(db: State<'_, Db>, id: String, tags: Vec<String>) -> Result<(), String> {
+    db.set_tags(&id, &tags).await.map_err(err)
+}
+
+#[tauri::command]
 async fn delete_video(db: State<'_, Db>, id: String) -> Result<(), String> {
     db.delete_video(&id).await.map_err(err)
 }
@@ -124,6 +129,7 @@ pub fn run() {
             upsert_video,
             set_video_title,
             set_last_pos,
+            set_video_tags,
             delete_video,
             list_notes,
             create_note,

@@ -53,6 +53,7 @@ export class App extends LitElement {
   @state() private settingsOpen = false;
   @state() private status = "";
   @state() private selectedId: string | null = null;
+  @state() private tagFilter: string | null = null;
 
   private player: Player | null = null;
   private lastSaved = 0;
@@ -291,9 +292,23 @@ export class App extends LitElement {
     if (this.currentId === id) { this.currentId = null; this.notes = []; }
     await this.refreshVideos();
   }
+  private allTags(): string[] {
+    return [...new Set(this.videos.flatMap((v) => v.tags))].sort((a, b) => a.localeCompare(b));
+  }
+  private async addTag(name: string) {
+    const v = this.current; const t = name.trim();
+    if (!v || !t || v.tags.includes(t)) return;
+    await api.setVideoTags(v.id, [...v.tags, t]); await this.refreshVideos();
+  }
+  private async removeTag(name: string) {
+    const v = this.current; if (!v) return;
+    await api.setVideoTags(v.id, v.tags.filter((x) => x !== name)); await this.refreshVideos();
+  }
 
   render() {
     const filtered = this.displayed();
+    const tags = this.allTags();
+    const vids = this.tagFilter ? this.videos.filter((v) => v.tags.includes(this.tagFilter!)) : this.videos;
     return html`
       <header class="titlebar" data-tauri-drag-region>
         <span class="tb-title" data-tauri-drag-region><span class="dot"></span> youtube-note-thing</span>
@@ -306,8 +321,12 @@ export class App extends LitElement {
 
       <aside>
         <div class="label">Library</div>
+        ${tags.length ? html`<div class="tagbar">
+          <button class="chip ${!this.tagFilter ? "on" : ""}" @click=${() => (this.tagFilter = null)}>All</button>
+          ${tags.map((t) => html`<button class="chip ${this.tagFilter === t ? "on" : ""}" @click=${() => (this.tagFilter = this.tagFilter === t ? null : t)}>${t}</button>`)}
+        </div>` : nothing}
         <div class="lib">
-          ${this.videos.length ? this.videos.map((v) => html`
+          ${vids.length ? vids.map((v) => html`
             <div class="libcard ${v.id === this.currentId ? "active" : ""}" @click=${() => this.loadVideo(v.id, v.url)}>
               <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                 @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
@@ -316,7 +335,7 @@ export class App extends LitElement {
                 <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}</div>
               </div>
               <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
-            </div>`) : html`<div class="empty-lib">No videos yet — load one to start.</div>`}
+            </div>`) : html`<div class="empty-lib">${this.videos.length ? "No videos match this tag." : "No videos yet — load one to start."}</div>`}
         </div>
       </aside>
 
@@ -335,6 +354,11 @@ export class App extends LitElement {
             <div class="np-meta">${this.current.channel || ""}${(this.dur || this.current.duration) ? html` · ${formatTime(this.dur || this.current.duration || 0)}` : nothing}</div>
           </div>
           <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
+        </div>` : nothing}
+        ${this.current ? html`<div class="vtags">
+          ${this.current.tags.map((t) => html`<span class="chip tag">${t}<button class="x" title="Remove tag" aria-label="Remove tag ${t}" @click=${() => this.removeTag(t)}>×</button></span>`)}
+          <input class="tag-add" type="text" placeholder="+ tag" aria-label="Add tag"
+            @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { this.addTag((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ""; } }} />
         </div>` : nothing}
         <div id="playerWrap"><div id="player"></div></div>
         <div id="timeline" title="click to seek" @click=${(e: MouseEvent) => this.timelineClick(e)}>
@@ -485,6 +509,16 @@ export class App extends LitElement {
     .libcard .rm { opacity:0; position:absolute; top:5px; right:5px; padding:3px; }
     .libcard:hover .rm { opacity:.65; } .libcard .rm:hover { opacity:1; }
     .empty-lib { color:var(--fg-faded); font-size:12px; padding:6px 16px; }
+    .tagbar { display:flex; flex-wrap:wrap; gap:5px; padding:0 12px 8px; }
+    .chip { font:inherit; font-size:11.5px; padding:3px 9px; border-radius:999px; cursor:pointer; background:var(--bg-elevated);
+      border:1px solid var(--border); color:var(--fg-muted); display:inline-flex; align-items:center; gap:5px; transition:color .12s, border-color .12s; }
+    .chip:hover { color:var(--fg-default); }
+    .chip.on { background:var(--tint); border-color:var(--accent); color:var(--accent); }
+    .vtags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+    .chip.tag { color:var(--fg-default); cursor:default; }
+    .chip .x { background:none; border:none; padding:0; margin:0; color:var(--fg-faded); cursor:pointer; font-size:14px; line-height:1; }
+    .chip .x:hover { color:var(--err); }
+    .tag-add { width:84px; padding:4px 10px; border-radius:999px; font-size:11.5px; background:var(--bg-deep); }
 
     button,.btn { font:inherit; color:var(--fg-default); background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--r-sm);
       padding:8px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
