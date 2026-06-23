@@ -165,6 +165,83 @@ fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
     Ok(segs)
 }
 
+/// Best-effort standalone transcript: fetch YouTube's own caption track via the
+/// InnerTube player endpoint (no auth, no yt-dlp). Fragile by nature — many videos
+/// have no captions, and YouTube changes this — so failures are normal; the UI then
+/// points at Phoneme for reliable transcripts. Runs from Rust, so no webview CORS.
+#[tauri::command]
+async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<Segment>, String> {
+    let want = lang.unwrap_or_else(|| "en".into());
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"; // public WEB InnerTube key
+    let body = serde_json::json!({
+        "context": { "client": { "clientName": "WEB", "clientVersion": "2.20240101.00.00" } },
+        "videoId": video_id,
+    });
+    let player: serde_json::Value = client
+        .post(format!("https://www.youtube.com/youtubei/v1/player?key={key}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let tracks = player
+        .pointer("/captions/playerCaptionsTracklistRenderer/captionTracks")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if tracks.is_empty() {
+        return Err("No captions available for this video".into());
+    }
+    let pick = tracks
+        .iter()
+        .find(|t| t.get("languageCode").and_then(|x| x.as_str()) == Some(want.as_str()))
+        .or_else(|| tracks.first())
+        .unwrap();
+    let base = pick
+        .get("baseUrl")
+        .and_then(|x| x.as_str())
+        .ok_or("Caption track has no URL")?;
+    let cap: serde_json::Value = client
+        .get(format!("{base}&fmt=json3"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut segs = Vec::new();
+    if let Some(events) = cap.get("events").and_then(|v| v.as_array()) {
+        for ev in events {
+            let start = ev.get("tStartMs").and_then(|x| x.as_i64()).unwrap_or(0);
+            let dur = ev.get("dDurationMs").and_then(|x| x.as_i64()).unwrap_or(0);
+            let text: String = ev
+                .get("segs")
+                .and_then(|s| s.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.get("utf8").and_then(|x| x.as_str()))
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            segs.push(Segment { start_ms: start, end_ms: start + dur, text, speaker: None });
+        }
+    }
+    if segs.is_empty() {
+        return Err("No caption text found".into());
+    }
+    Ok(segs)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -209,6 +286,7 @@ pub fn run() {
             phoneme_available,
             phoneme_import,
             phoneme_segments,
+            youtube_captions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

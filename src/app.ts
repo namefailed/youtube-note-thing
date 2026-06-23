@@ -280,6 +280,13 @@ export class App extends LitElement {
     catch (e) { this.flash(String(e)); }
     finally { this.transcriptBusy = false; }
   }
+  private async loadCaptions() {
+    if (!this.currentId) return;
+    this.transcriptBusy = true;
+    try { this.segments = await api.youtubeCaptions(this.currentId); }
+    catch (e) { this.segments = []; this.flash(String(e)); }
+    finally { this.transcriptBusy = false; }
+  }
 
   private setSetting<K extends keyof Settings>(k: K, v: Settings[K]) {
     this.settings = { ...this.settings, [k]: v };
@@ -414,8 +421,7 @@ export class App extends LitElement {
             <button class="ghost" aria-label="Save notes to vault folder" title=${this.settings.vaultDir ? "Save .md to vault folder" : "Set a vault folder in settings first"}
               ?disabled=${!this.notes.length || !this.settings.vaultDir} @click=${() => this.saveToVault()}>${I.folder}</button>
           ` : html`
-            ${this.recId() ? html`<button @click=${() => this.loadTranscript()} ?disabled=${this.transcriptBusy}>${this.transcriptBusy ? "Loading…" : "Reload"}</button>` : nothing}
-            ${this.phonemeOk && this.currentId && !this.recId() ? html`<button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Send to Phoneme</button>` : nothing}
+            ${this.segments.length ? html`<button @click=${() => (this.segments = [])}>Sources</button>` : nothing}
           `}
           <span class="grow"></span>
           <span class="status" role="status" aria-live="polite">${this.status}</span>
@@ -514,21 +520,25 @@ export class App extends LitElement {
 
   private renderTranscript() {
     if (!this.currentId) return html`<div class="notes"><div class="empty">Load a video first.</div></div>`;
-    if (!this.recId() && !this.phonemeOk) {
-      return html`<div class="notes"><div class="empty">Transcripts come from <b>Phoneme</b>. Install and run Phoneme, then reopen this app to enable “Send to Phoneme”.</div></div>`;
+    if (this.segments.length) {
+      return html`<div class="notes transcript">
+        ${this.segments.map((s) => html`<button class="seg" @click=${() => this.seek(s.start_ms / 1000)}>
+          <span class="ts">${formatTime(s.start_ms / 1000)}</span><span class="grow">${s.text}</span></button>`)}
+      </div>`;
     }
-    if (!this.recId()) {
-      return html`<div class="notes"><div class="empty">This video hasn't been sent to Phoneme yet.<br><br>
-        <button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Send to Phoneme</button></div></div>`;
-    }
-    if (!this.segments.length) {
-      return html`<div class="notes"><div class="empty">${this.transcriptBusy ? "Loading…" : "No transcript loaded yet — it may still be transcribing."}<br><br>
-        <button @click=${() => this.loadTranscript()} ?disabled=${this.transcriptBusy}>Load transcript</button></div></div>`;
-    }
-    return html`<div class="notes transcript">
-      ${this.segments.map((s) => html`<button class="seg" @click=${() => this.seek(s.start_ms / 1000)}>
-        <span class="ts">${formatTime(s.start_ms / 1000)}</span><span class="grow">${s.text}</span></button>`)}
-    </div>`;
+    return html`<div class="notes"><div class="empty src">
+      ${this.recId()
+        ? html`<button class="primary" @click=${() => this.loadTranscript()} ?disabled=${this.transcriptBusy}>Load Phoneme transcript</button>`
+        : this.phonemeOk
+          ? html`<button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Send to Phoneme</button>`
+          : nothing}
+      <button @click=${() => this.loadCaptions()} ?disabled=${this.transcriptBusy}>Load YouTube captions</button>
+      <div class="muted sm">${this.transcriptBusy
+        ? "Working…"
+        : this.phonemeOk
+          ? "Phoneme gives a cleaned, reliable transcript. YouTube captions are a quick best-effort fallback."
+          : "Phoneme not detected — captions are best-effort and many videos have none. Install Phoneme for reliable transcripts."}</div>
+    </div></div>`;
   }
 
   static styles = css`
@@ -641,7 +651,8 @@ export class App extends LitElement {
     .acts { display:flex; gap:2px; opacity:0; transition:opacity .12s; flex:0 0 auto; }
     .note:hover .acts { opacity:1; }
     textarea { width:100%; resize:vertical; min-height:62px; line-height:1.5; }
-    .empty { margin:auto; text-align:center; color:var(--fg-faded); max-width:300px; line-height:1.7; }
+    .empty { margin:auto; text-align:center; color:var(--fg-faded); max-width:320px; line-height:1.7; }
+    .empty.src { display:flex; flex-direction:column; gap:10px; align-items:center; }
     .kbd2 { background:var(--bg-elevated); border:1px solid var(--border); border-radius:5px; padding:1px 6px; color:var(--fg-default); font-size:12px; }
 
     .overlay { position:fixed; inset:0; background:color-mix(in srgb, var(--bg-deep) 68%, transparent); backdrop-filter:blur(4px);

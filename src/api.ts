@@ -40,4 +40,6 @@ export const api = {
   phonemeAvailable: () => invoke<boolean>("phoneme_available"),
   phonemeImport: (url: string) => invoke<string>("phoneme_import", { url }),
   phonemeSegments: (id: string) => invoke<Segment[]>("phoneme_segments", { id }),
+  youtubeCaptions: (videoId: string, lang?: string) =>
+    invoke<Segment[]>("youtube_captions", { videoId, lang: lang ?? null }),
 };
