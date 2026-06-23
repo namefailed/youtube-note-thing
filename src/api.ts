@@ -51,6 +51,7 @@ export const api = {
   importYoutubePlaylist: (playlistId: string) =>
     invoke<number>("import_youtube_playlist", { playlistId }),
   googleStatus: () => invoke<boolean>("google_status"),
+  googleHasDefault: () => invoke<boolean>("google_has_default"),
   googleConnect: (clientId: string, clientSecret: string) =>
     invoke<void>("google_connect", { clientId, clientSecret }),
   googleLogout: () => invoke<void>("google_logout"),

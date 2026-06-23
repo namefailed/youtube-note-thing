@@ -374,6 +374,26 @@ struct GPlaylist {
     count: i64,
 }
 
+/// The app's compiled-in default OAuth client (from build.rs / .env). Empty if
+/// the build had no creds, in which case users must supply their own.
+fn default_google() -> (&'static str, &'static str) {
+    (
+        option_env!("YTNT_GOOGLE_CLIENT_ID").unwrap_or(""),
+        option_env!("YTNT_GOOGLE_CLIENT_SECRET").unwrap_or(""),
+    )
+}
+
+/// Use the caller's creds if given, else fall back to the compiled-in defaults.
+fn resolve_creds(id: String, secret: String) -> Result<(String, String), String> {
+    let (did, dsec) = default_google();
+    let id = if id.trim().is_empty() { did.to_string() } else { id };
+    let secret = if secret.trim().is_empty() { dsec.to_string() } else { secret };
+    if id.is_empty() || secret.is_empty() {
+        return Err("No Google credentials — connect with the built-in client or add your own in Settings.".into());
+    }
+    Ok((id, secret))
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -450,11 +470,12 @@ async fn valid_access_token(app: &AppHandle, cid: &str, secret: &str) -> Result<
     if t.refresh_token.is_empty() {
         return Err("Session expired — reconnect your Google account".into());
     }
+    let (cid, secret) = resolve_creds(cid.to_string(), secret.to_string())?;
     let res: serde_json::Value = reqwest::Client::new()
         .post("https://oauth2.googleapis.com/token")
         .form(&[
-            ("client_id", cid),
-            ("client_secret", secret),
+            ("client_id", cid.as_str()),
+            ("client_secret", secret.as_str()),
             ("refresh_token", t.refresh_token.as_str()),
             ("grant_type", "refresh_token"),
         ])
@@ -480,6 +501,12 @@ fn google_status(app: AppHandle) -> bool {
 }
 
 #[tauri::command]
+fn google_has_default() -> bool {
+    let (id, secret) = default_google();
+    !id.is_empty() && !secret.is_empty()
+}
+
+#[tauri::command]
 fn google_logout(app: AppHandle) -> Result<(), String> {
     let p = tokens_path(&app);
     if p.exists() {
@@ -491,6 +518,7 @@ fn google_logout(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn google_connect(app: AppHandle, client_id: String, client_secret: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
+    let (client_id, client_secret) = resolve_creds(client_id, client_secret)?;
     let listener = TcpListener::bind("127.0.0.1:0").map_err(err)?;
     let port = listener.local_addr().map_err(err)?.port();
     let redirect = format!("http://127.0.0.1:{port}");
@@ -646,6 +674,7 @@ pub fn run() {
             youtube_captions,
             import_youtube_playlist,
             google_status,
+            google_has_default,
             google_logout,
             google_connect,
             google_playlists,

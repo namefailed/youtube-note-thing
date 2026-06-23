@@ -87,6 +87,7 @@ export class App extends LitElement {
   @state() private fsNote: { t: number } | null = null;
   @state() private titleEditing = false;
   @state() private googleConnected = false;
+  @state() private googleHasDefault = false;
   @state() private gplaylists: GPlaylist[] = [];
   @state() private phonemeOk = false;
   @state() private view: "notes" | "transcript" = "notes";
@@ -163,13 +164,12 @@ export class App extends LitElement {
     api.phonemeAvailable().then((ok) => (this.phonemeOk = ok)).catch(() => {});
     win()?.setDecorations(!this.settings.stripTitlebar)?.catch(() => {});
     api.googleStatus().then((ok) => { this.googleConnected = ok; if (ok) this.loadGPlaylists(); }).catch(() => {});
+    api.googleHasDefault().then((v) => (this.googleHasDefault = v)).catch(() => {});
   }
   private async googleConnect() {
-    const { gClientId, gClientSecret } = this.settings;
-    if (!gClientId || !gClientSecret) { this.flash("Enter your Google client ID and secret first", "err"); return; }
     this.flash("Opening Google sign-in — authorize in your browser…");
     try {
-      await api.googleConnect(gClientId, gClientSecret);
+      await api.googleConnect(this.settings.gClientId, this.settings.gClientSecret);
       this.googleConnected = true;
       this.flash("YouTube account connected", "ok");
       this.loadGPlaylists();
@@ -845,15 +845,21 @@ export class App extends LitElement {
               <button class="danger" @click=${() => this.googleDisconnect()}>Disconnect</button></div>
             <div class="help muted sm">Your playlists show in the sidebar — click one to import its videos. Watch Later &amp; History aren’t available through YouTube’s API.</div>
           ` : html`
-            <label class="field col"><span>Google client ID</span>
-              <input type="text" placeholder="xxxxx.apps.googleusercontent.com" .value=${this.settings.gClientId}
-                @input=${(e: Event) => this.setSetting("gClientId", (e.target as HTMLInputElement).value)} /></label>
-            <label class="field col"><span>Client secret</span>
-              <input type="password" placeholder="GOCSPX-…" .value=${this.settings.gClientSecret}
-                @input=${(e: Event) => this.setSetting("gClientSecret", (e.target as HTMLInputElement).value)} /></label>
             <div class="field"><span>Link account</span>
               <button class="primary" @click=${() => this.googleConnect()}>Connect YouTube</button></div>
-            <div class="help muted sm">Create a Google Cloud OAuth <b>Desktop app</b> client, enable the <b>YouTube Data API v3</b>, then paste its ID + secret here. Sign-in opens in your browser. Watch Later/History can’t be read via the API.</div>
+            <div class="help muted sm">${this.googleHasDefault
+              ? html`Uses the app’s built-in YouTube access — sign-in opens in your browser. Watch Later/History aren’t available via the API.`
+              : html`No built-in client in this build — add your own below. Watch Later/History aren’t available via the API.`}</div>
+            <details class="adv">
+              <summary>Use my own Google client (advanced)</summary>
+              <label class="field col"><span>Client ID</span>
+                <input type="text" placeholder="xxxxx.apps.googleusercontent.com" .value=${this.settings.gClientId}
+                  @input=${(e: Event) => this.setSetting("gClientId", (e.target as HTMLInputElement).value)} /></label>
+              <label class="field col"><span>Client secret</span>
+                <input type="password" placeholder="GOCSPX-…" .value=${this.settings.gClientSecret}
+                  @input=${(e: Event) => this.setSetting("gClientSecret", (e.target as HTMLInputElement).value)} /></label>
+              <div class="help muted sm">Create a Google Cloud OAuth <b>Desktop app</b> client + enable <b>YouTube Data API v3</b>. Overrides the built-in client; stored only on this device.</div>
+            </details>
           `}
         </section>
         <section class="settings-section">
@@ -1147,6 +1153,10 @@ export class App extends LitElement {
     .settings-section { display:flex; flex-direction:column; gap:10px; border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:10px 12px 12px; }
     .settings-section h3 { margin:0; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--accent); font-weight:700; }
     .help { color:var(--fg-faded); margin-top:-4px; line-height:1.45; }
+    .adv > summary { list-style:none; cursor:pointer; color:var(--fg-faded); font-size:12px; padding:4px 0; }
+    .adv > summary::-webkit-details-marker { display:none; }
+    .adv > summary:hover { color:var(--accent); }
+    .adv[open] { display:flex; flex-direction:column; gap:10px; }
     .hint { border-top:1px solid var(--border-subtle); padding-top:10px; line-height:1.7; }
     .hint b { color:var(--fg-default); font-weight:600; }
     .sbar { display:flex; align-items:center; gap:8px; background:var(--bg-deep); border:1px solid var(--border); border-radius:var(--r-sm); padding:0 11px; color:var(--fg-muted); }

@@ -30,6 +30,9 @@ jobs:
           # Updater signing (minisign). Generate with `npm run tauri signer generate`.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Optional: bundle the app's default Google OAuth client (build.rs reads these).
+          YTNT_GOOGLE_CLIENT_ID: ${{ secrets.YTNT_GOOGLE_CLIENT_ID }}
+          YTNT_GOOGLE_CLIENT_SECRET: ${{ secrets.YTNT_GOOGLE_CLIENT_SECRET }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "youtube-note-thing ${{ github.ref_name }}"
