@@ -66,7 +66,8 @@ export class App extends LitElement {
   @state() private searchResults: SearchHit[] = [];
   @state() private phonemeHits: PhonemeHit[] = [];
   @state() private settingsOpen = false;
-  @state() private status = "";
+  @state() private toasts: { id: number; msg: string; kind: "info" | "ok" | "err" }[] = [];
+  private toastN = 0;
   @state() private selectedId: string | null = null;
   @state() private tagFilter: string | null = null;
   @state() private libView: "all" | "transcript" = "all";
@@ -179,7 +180,7 @@ export class App extends LitElement {
   private addFromInput() {
     const input = this.renderRoot.querySelector("#url") as HTMLInputElement;
     const id = parseVideoId(input.value);
-    if (!id) { this.flash("Not a valid YouTube URL"); return; }
+    if (!id) { this.flash("Not a valid YouTube URL", "err"); return; }
     const raw = input.value.trim(); input.value = "";
     this.loadVideo(id, /^https?:/.test(raw) ? raw : `https://youtu.be/${id}`);
   }
@@ -280,13 +281,13 @@ export class App extends LitElement {
     setTimeout(() => this.seek(h.t_secs), 900);
   }
 
-  private async exportJson() { download("ytnt-backup.json", await api.exportJson(), "application/json"); this.flash("Exported backup"); }
+  private async exportJson() { download("ytnt-backup.json", await api.exportJson(), "application/json"); this.flash("Exported backup", "ok"); }
   private async importJson(e: Event) {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
     await api.importJson(await file.text());
     await this.refreshVideos(); await this.refreshNotes();
-    this.flash("Imported backup");
+    this.flash("Imported backup", "ok");
   }
 
   private mdForCurrent(): string | null {
@@ -296,7 +297,7 @@ export class App extends LitElement {
   }
   private async copyMd() {
     const md = this.mdForCurrent(); if (!md) return;
-    await navigator.clipboard.writeText(md); this.flash("Copied Markdown");
+    await navigator.clipboard.writeText(md); this.flash("Copied Markdown", "ok");
   }
   private async copyLink(n: Note) {
     if (!this.currentId) return;
@@ -304,7 +305,7 @@ export class App extends LitElement {
   }
   private downloadMd() {
     const md = this.mdForCurrent(); if (!md) return;
-    download(`${this.currentSlug()}.md`, md, "text/markdown"); this.flash("Saved .md");
+    download(`${this.currentSlug()}.md`, md, "text/markdown"); this.flash("Saved .md", "ok");
   }
   private currentSlug(): string {
     const v = this.current; if (!v) return "notes";
@@ -313,8 +314,8 @@ export class App extends LitElement {
   private async saveToVault() {
     const md = this.mdForCurrent(); const dir = this.settings.vaultDir?.trim();
     if (!md || !dir) return;
-    try { const path = await api.saveMarkdown(dir, `${this.currentSlug()}.md`, md); this.flash(`Saved → ${path}`); }
-    catch (e) { this.flash(String(e)); }
+    try { const path = await api.saveMarkdown(dir, `${this.currentSlug()}.md`, md); this.flash(`Saved → ${path}`, "ok"); }
+    catch (e) { this.flash(String(e), "err"); }
   }
 
   // ── Phoneme integration (optional) ──────────────────────────────────────
@@ -328,21 +329,21 @@ export class App extends LitElement {
     const v = this.current; if (!v) return;
     this.transcriptBusy = true; this.flash("Sending to Phoneme… (download + queue)");
     try { const rec = await api.phonemeImport(v.url); await this.setRecId(rec); this.flash("Queued — transcribing in Phoneme"); }
-    catch (e) { this.flash(String(e)); }
+    catch (e) { this.flash(String(e), "err"); }
     finally { this.transcriptBusy = false; }
   }
   private async loadTranscript() {
     const rec = this.recId(); if (!rec) return;
     this.transcriptBusy = true;
     try { this.segments = await api.phonemeSegments(rec); if (!this.segments.length) this.flash("Still transcribing… try again shortly"); }
-    catch (e) { this.flash(String(e)); }
+    catch (e) { this.flash(String(e), "err"); }
     finally { this.transcriptBusy = false; }
   }
   private async loadCaptions() {
     if (!this.currentId) return;
     this.transcriptBusy = true;
     try { this.segments = await api.youtubeCaptions(this.currentId); }
-    catch (e) { this.segments = []; this.flash(String(e)); }
+    catch (e) { this.segments = []; this.flash(String(e), "err"); }
     finally { this.transcriptBusy = false; }
   }
 
@@ -353,7 +354,11 @@ export class App extends LitElement {
     if (k === "stripTitlebar") win()?.setDecorations(!v)?.catch(() => {});
     this.requestUpdate();
   }
-  private flash(m: string) { this.status = m; setTimeout(() => (this.status = ""), 2500); }
+  private flash(msg: string, kind: "info" | "ok" | "err" = "info") {
+    const id = ++this.toastN;
+    this.toasts = [...this.toasts, { id, msg, kind }];
+    setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), 2800);
+  }
   private async checkUpdates() {
     this.flash("Checking for updates…");
     try {
@@ -362,7 +367,7 @@ export class App extends LitElement {
       this.flash(`Downloading update ${update.version}…`);
       await update.downloadAndInstall();
       this.flash("Update installed — restart to apply");
-    } catch (e) { this.flash(`Update check failed: ${e}`); }
+    } catch (e) { this.flash(`Update check failed: ${e}`, "err"); }
   }
   private changeRate(d: number) {
     if (!this.player) return;
@@ -376,7 +381,7 @@ export class App extends LitElement {
       2: "Invalid video URL", 5: "Playback error", 100: "Video not found or removed",
       101: "Embedding disabled by the owner", 150: "Embedding disabled by the owner",
     };
-    this.flash(msg[code] ?? "Player error");
+    this.flash(msg[code] ?? "Player error", "err");
     if ((code === 101 || code === 150) && this.currentId)
       window.open(`https://www.youtube.com/watch?v=${this.currentId}`, "_blank");
   }
@@ -552,7 +557,6 @@ export class App extends LitElement {
             </div>
           </details>` : nothing}
           <span class="grow"></span>
-          <span class="status" role="status" aria-live="polite">${this.status}</span>
         </div>
 
         ${this.view === "notes"
@@ -568,6 +572,9 @@ export class App extends LitElement {
       ${this.searchOpen ? this.renderSearch() : nothing}
       ${this.settingsOpen ? this.renderSettings() : nothing}
       ${this.cheatOpen ? this.renderCheat() : nothing}
+      ${this.toasts.length ? html`<div class="toasts" role="status" aria-live="polite">
+        ${this.toasts.map((t) => html`<div class="toast ${t.kind}">${t.msg}</div>`)}
+      </div>` : nothing}
     `;
   }
 
@@ -839,6 +846,11 @@ export class App extends LitElement {
     .toolbar input { flex:1; }
     .kbd { font-size:11px; color:color-mix(in srgb, var(--accent-fg) 72%, transparent); font-weight:600; padding-left:2px; }
     .status { color:var(--fg-muted); font-size:12px; white-space:nowrap; }
+    .toasts { position:fixed; right:16px; bottom:16px; z-index:50; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+    .toast { background:var(--bg-elevated); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:var(--r-sm); padding:9px 13px; font-size:13px; color:var(--fg-default); box-shadow:0 10px 30px rgba(0,0,0,.5); max-width:340px; animation:toast-in var(--ui-motion) ease; }
+    .toast.ok { border-left-color:var(--ok); }
+    .toast.err { border-left-color:var(--err); }
+    @keyframes toast-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
     details.menu { position:relative; flex:0 0 auto; }
     details.menu > summary { list-style:none; cursor:pointer; display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
     details.menu > summary::-webkit-details-marker { display:none; }
