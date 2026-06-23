@@ -441,6 +441,16 @@ export class App extends LitElement {
     await this.refreshVideos();
     this.flash(`Deleted ${ids.length} video${ids.length > 1 ? "s" : ""}`, "ok");
   }
+  private async bulkTag(name: string) {
+    const t = name.trim(); if (!t) return;
+    const n = this.selected.size;
+    for (const id of this.selected) {
+      const v = this.videos.find((x) => x.id === id);
+      if (v && !v.tags.includes(t)) await api.setVideoTags(id, [...v.tags, t]);
+    }
+    await this.refreshVideos();
+    this.flash(`Tagged ${n} video${n > 1 ? "s" : ""} “${t}”`, "ok");
+  }
   private onPlayerError(code: number) {
     const msg: Record<number, string> = {
       2: "Invalid video URL", 5: "Playback error", 100: "Video not found or removed",
@@ -541,6 +551,8 @@ export class App extends LitElement {
         </div>` : nothing}
         ${this.selected.size ? html`<div class="bulkbar">
           <span>${this.selected.size} selected</span>
+          <input class="bulk-tag" type="text" placeholder="+ tag…" title="Add a tag to selected"
+            @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { this.bulkTag((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ""; } }} />
           <span class="grow"></span>
           <button class="danger" @click=${() => this.bulkDelete()}>Delete</button>
           <button class="ghost" @click=${() => (this.selected = new Set())}>Clear</button>
@@ -561,7 +573,9 @@ export class App extends LitElement {
                 <button class="ghost pin ${v.pinned ? "on" : ""}" title=${v.pinned ? "Unpin" : "Pin to top"} @click=${(e: Event) => { e.stopPropagation(); this.togglePin(v.id, v.pinned); }}>${I.pin}</button>
                 <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
               </div>
-            </div>`) : html`<div class="empty-lib">${this.videos.length ? "No videos match this filter." : "No videos yet — load one to start."}</div>`}
+            </div>`) : html`<div class="empty-lib">${this.videos.length
+              ? html`No videos match this filter.<br /><button class="linkbtn" @click=${() => { this.tagFilter = null; this.libView = "all"; }}>Clear filters</button>`
+              : "No videos yet — load one to start."}</div>`}
         </div>
       </aside>
 
@@ -652,8 +666,8 @@ export class App extends LitElement {
 
         ${this.view === "notes"
           ? html`<div class="notes" role="list" aria-label="Notes for this video" @click=${(e: Event) => this.onNotesClick(e)}>
-              ${!this.currentId ? html`<div class="empty">Load a video, then press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.</div>` : nothing}
-              ${this.currentId && filtered.length === 0 && !this.editing ? html`<div class="empty">No notes yet.</div>` : nothing}
+              ${!this.currentId ? html`<div class="empty"><h3>No video loaded</h3><p>Paste a YouTube link above, then press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.</p></div>` : nothing}
+              ${this.currentId && filtered.length === 0 && !this.editing ? html`<div class="empty"><h3>${this.filter ? "No matching notes" : "No notes yet"}</h3><p>${this.filter ? "Try a different search." : html`Press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.`}</p></div>` : nothing}
               ${this.editing && !this.editing.id ? this.renderEditor() : nothing}
               ${filtered.map((n) => (this.editing?.id === n.id ? this.renderEditor() : this.renderNote(n)))}
             </div>`
@@ -901,6 +915,8 @@ export class App extends LitElement {
     .libcard:hover .lc-check, .libcard.sel .lc-check { opacity:1; }
     .libcard.sel { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
     .bulkbar { display:flex; align-items:center; gap:6px; padding:7px 10px; margin:4px 8px; background:var(--bg-elevated); border:1px solid var(--accent); border-radius:var(--r-sm); font-size:12px; }
+    .bulk-tag { width:78px; padding:3px 8px; font-size:12px; }
+    .bulk-tag:focus { width:120px; }
     .danger { background:var(--err); color:var(--bg-deep); border-color:var(--err); }
     .danger:hover { background:color-mix(in srgb, var(--err), black 12%); border-color:color-mix(in srgb, var(--err), black 12%); }
     .pill { padding:1px 7px; border-radius:999px; background:var(--tint); color:var(--accent); font-size:9.5px; }
@@ -1033,8 +1049,12 @@ export class App extends LitElement {
     .acts { display:flex; gap:2px; opacity:0; transition:opacity .12s; flex:0 0 auto; }
     .note:hover .acts { opacity:1; }
     textarea { width:100%; resize:vertical; min-height:62px; line-height:1.5; }
-    .empty { margin:auto; text-align:center; color:var(--fg-faded); max-width:320px; line-height:1.7; }
+    .empty { margin:auto; text-align:center; color:var(--fg-muted); max-width:340px; line-height:1.6; padding:40px; }
+    .empty h3 { margin:0 0 8px; color:var(--fg-default); font-size:14px; font-weight:600; }
+    .empty p { margin:0; color:var(--fg-faded); }
     .empty.src { display:flex; flex-direction:column; gap:10px; align-items:center; }
+    .linkbtn { background:none; border:none; color:var(--accent); cursor:pointer; padding:4px 0 0; font:inherit; }
+    .linkbtn:hover { text-decoration:underline; background:none; }
     .kbd2 { background:var(--bg-elevated); border:1px solid var(--border); border-radius:5px; padding:1px 6px; color:var(--fg-default); font-size:12px; }
 
     .overlay { position:fixed; inset:0; background:color-mix(in srgb, var(--bg-deep) 68%, transparent); backdrop-filter:blur(4px);
