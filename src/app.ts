@@ -31,6 +31,7 @@ const I = {
   close: svg`<svg viewBox="0 0 24 24" class="i"><path d="M18 6L6 18M6 6l12 12"/></svg>`,
   menu: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 6h16M4 12h16M4 18h16"/></svg>`,
   chev: svg`<svg viewBox="0 0 24 24" class="i"><path d="M9 6l6 6-6 6"/></svg>`,
+  caret: svg`<svg viewBox="0 0 24 24" class="i"><path d="M6 9l6 6 6-6"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -73,6 +74,7 @@ export class App extends LitElement {
   @state() private cheatOpen = false;
   @state() private phonemeOk = false;
   @state() private view: "notes" | "transcript" = "notes";
+  @state() private rate = 1;
   @state() private segments: Segment[] = [];
   @state() private transcriptBusy = false;
   @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
@@ -365,8 +367,10 @@ export class App extends LitElement {
   private changeRate(d: number) {
     if (!this.player) return;
     const r = Math.min(3, Math.max(0.25, +(this.player.getRate() + d).toFixed(2)));
-    this.player.setRate(r); this.flash(`Speed ${r}×`);
+    this.player.setRate(r); this.rate = r; this.flash(`Speed ${r}×`);
   }
+  private setSpeed(r: number) { this.player?.setRate(r); this.rate = r; this.flash(`Speed ${r}×`); }
+  private closeMenu(e: Event) { (e.target as HTMLElement).closest("details")?.removeAttribute("open"); }
   private onPlayerError(code: number) {
     const msg: Record<number, string> = {
       2: "Invalid video URL", 5: "Playback error", 100: "Video not found or removed",
@@ -530,13 +534,23 @@ export class App extends LitElement {
             <input type="text" placeholder="Filter notes…" .value=${this.filter}
               @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)} />
             ${this.current?.manual_order ? html`<button @click=${() => this.resetOrder()}>By time</button>` : nothing}
-            <button class="ghost" title="Copy notes as Markdown" aria-label="Copy notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.copyMd()}>${I.copy}</button>
-            <button class="ghost" title="Download .md" aria-label="Download notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.downloadMd()}>${I.download}</button>
-            <button class="ghost" aria-label="Save notes to vault folder" title=${this.settings.vaultDir ? "Save .md to vault folder" : "Set a vault folder in settings first"}
-              ?disabled=${!this.notes.length || !this.settings.vaultDir} @click=${() => this.saveToVault()}>${I.folder}</button>
+            ${this.notes.length ? html`<details class="menu">
+              <summary class="ghost" title="Export notes">${I.download} Export ${I.caret}</summary>
+              <div class="menu-pop">
+                <button @click=${(ev: Event) => { this.closeMenu(ev); this.copyMd(); }}>${I.copy} Copy as Markdown</button>
+                <button @click=${(ev: Event) => { this.closeMenu(ev); this.downloadMd(); }}>${I.download} Download .md</button>
+                <button ?disabled=${!this.settings.vaultDir} title=${this.settings.vaultDir ? "" : "Set a vault folder in settings first"} @click=${(ev: Event) => { this.closeMenu(ev); this.saveToVault(); }}>${I.folder} Save to vault</button>
+              </div>
+            </details>` : nothing}
           ` : html`
             ${this.segments.length ? html`<button @click=${() => (this.segments = [])}>Sources</button>` : nothing}
           `}
+          ${this.currentId ? html`<details class="menu">
+            <summary class="ghost" title="Playback speed">${this.rate}× ${I.caret}</summary>
+            <div class="menu-pop">
+              ${[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((s) => html`<button class=${s === this.rate ? "on" : ""} @click=${(ev: Event) => { this.closeMenu(ev); this.setSpeed(s); }}>${s}×</button>`)}
+            </div>
+          </details>` : nothing}
           <span class="grow"></span>
           <span class="status" role="status" aria-live="polite">${this.status}</span>
         </div>
@@ -564,10 +578,10 @@ export class App extends LitElement {
       <div class="grow">
         <textarea placeholder="Write a note… Markdown supported." .value=${e.draft}
           @keydown=${(ev: KeyboardEvent) => {
-            if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); this.commit((ev.target as HTMLTextAreaElement).value); }
+            if ((ev.ctrlKey || ev.metaKey) && (ev.key === "Enter" || ev.key.toLowerCase() === "s")) { ev.preventDefault(); this.commit((ev.target as HTMLTextAreaElement).value); }
             else if (ev.key === "Escape") { ev.preventDefault(); this.cancel(); }
           }}></textarea>
-        <div class="muted sm" style="margin-top:5px">Ctrl+Enter to save · Esc to cancel</div>
+        <div class="muted sm" style="margin-top:5px">Ctrl+Enter / Ctrl+S to save · Esc to cancel</div>
       </div>
     </div>`;
   }
@@ -825,6 +839,15 @@ export class App extends LitElement {
     .toolbar input { flex:1; }
     .kbd { font-size:11px; color:color-mix(in srgb, var(--accent-fg) 72%, transparent); font-weight:600; padding-left:2px; }
     .status { color:var(--fg-muted); font-size:12px; white-space:nowrap; }
+    details.menu { position:relative; flex:0 0 auto; }
+    details.menu > summary { list-style:none; cursor:pointer; display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+    details.menu > summary::-webkit-details-marker { display:none; }
+    .menu-pop { position:absolute; right:0; top:calc(100% + 4px); z-index:20; display:flex; flex-direction:column; gap:1px; min-width:170px;
+      background:var(--bg-elevated); border:var(--popup-border, 1px solid var(--border)); border-radius:var(--r-sm); padding:4px; box-shadow:0 12px 34px rgba(0,0,0,.5); }
+    .menu-pop button { display:flex; align-items:center; gap:8px; justify-content:flex-start; width:100%; background:transparent; border:none; border-radius:6px; padding:7px 9px; color:var(--fg-default); }
+    .menu-pop button:hover { background:var(--hover); }
+    .menu-pop button.on { color:var(--accent); }
+    .menu-pop button[disabled] { opacity:.45; cursor:not-allowed; }
     .tabs { display:flex; gap:2px; background:var(--bg-deep); border:1px solid var(--border); border-radius:var(--r-sm); padding:2px; flex:0 0 auto; }
     .tab { background:transparent; border:none; color:var(--fg-muted); padding:5px 12px; border-radius:6px; }
     .tab:hover { color:var(--fg-default); background:transparent; }
