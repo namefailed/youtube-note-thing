@@ -3,7 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { api, type VideoWithCount, type Note, type SearchHit } from "./api";
 import { Player } from "./player";
-import { parseVideoId, formatTime, applyOffset, notesToMarkdown } from "./lib";
+import { parseVideoId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -33,6 +33,7 @@ const I = {
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
   download: svg`<svg viewBox="0 0 24 24" class="i"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg>`,
   folder: svg`<svg viewBox="0 0 24 24" class="i"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`,
+  link: svg`<svg viewBox="0 0 24 24" class="i"><path d="M10.6 13.4a4 4 0 0 0 5.7 0l2.4-2.4a4 4 0 1 0-5.7-5.7l-1.1 1.1"/><path d="M13.4 10.6a4 4 0 0 0-5.7 0l-2.4 2.4a4 4 0 1 0 5.7 5.7l1.1-1.1"/></svg>`,
   gear: svg`<svg viewBox="0 0 24 24" class="i"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.9 7.9 0 0 0 0-2l2-1.6-2-3.4-2.4 1a8 8 0 0 0-1.7-1l-.4-2.6h-4l-.4 2.6a8 8 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.9 7.9 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a8 8 0 0 0 1.7 1l.4 2.6h4l.4-2.6a8 8 0 0 0 1.7-1l2.4 1 2-3.4z"/></svg>`,
 };
 
@@ -229,6 +230,10 @@ export class App extends LitElement {
     const md = this.mdForCurrent(); if (!md) return;
     await navigator.clipboard.writeText(md); this.flash("Copied Markdown");
   }
+  private async copyLink(n: Note) {
+    if (!this.currentId) return;
+    await navigator.clipboard.writeText(tsLink(this.currentId, n.t_secs)); this.flash("Copied timestamp link");
+  }
   private downloadMd() {
     const md = this.mdForCurrent(); if (!md) return;
     download(`${this.currentSlug()}.md`, md, "text/markdown"); this.flash("Saved .md");
@@ -320,8 +325,8 @@ export class App extends LitElement {
           <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
             @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
           <button class="primary" @click=${() => this.addFromInput()}>Load</button>
-          <button class="ghost" title="Search all notes" @click=${() => { this.searchOpen = true; this.searchResults = []; }}>${I.search}</button>
-          <button class="ghost" title="Settings" @click=${() => (this.settingsOpen = true)}>${I.gear}</button>
+          <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => { this.searchOpen = true; this.searchResults = []; }}>${I.search}</button>
+          <button class="ghost" title="Settings" aria-label="Settings" @click=${() => (this.settingsOpen = true)}>${I.gear}</button>
         </div>
 
         ${this.current ? html`<div class="nowplaying">
@@ -344,14 +349,14 @@ export class App extends LitElement {
           <input type="text" placeholder="Filter notes…" .value=${this.filter}
             @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)} />
           ${this.current?.manual_order ? html`<button @click=${() => this.resetOrder()}>By time</button>` : nothing}
-          <button class="ghost" title="Copy notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.copyMd()}>${I.copy}</button>
-          <button class="ghost" title="Download .md" ?disabled=${!this.notes.length} @click=${() => this.downloadMd()}>${I.download}</button>
-          <button class="ghost" title=${this.settings.vaultDir ? "Save .md to vault folder" : "Set a vault folder in settings first"}
+          <button class="ghost" title="Copy notes as Markdown" aria-label="Copy notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.copyMd()}>${I.copy}</button>
+          <button class="ghost" title="Download .md" aria-label="Download notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.downloadMd()}>${I.download}</button>
+          <button class="ghost" aria-label="Save notes to vault folder" title=${this.settings.vaultDir ? "Save .md to vault folder" : "Set a vault folder in settings first"}
             ?disabled=${!this.notes.length || !this.settings.vaultDir} @click=${() => this.saveToVault()}>${I.folder}</button>
-          <span class="status">${this.status}</span>
+          <span class="status" role="status" aria-live="polite">${this.status}</span>
         </div>
 
-        <div class="notes" @click=${(e: Event) => this.onNotesClick(e)}>
+        <div class="notes" role="list" aria-label="Notes for this video" @click=${(e: Event) => this.onNotesClick(e)}>
           ${!this.currentId ? html`<div class="empty">Load a video, then press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.</div>` : nothing}
           ${this.currentId && filtered.length === 0 && !this.editing ? html`<div class="empty">No notes yet.</div>` : nothing}
           ${this.editing && !this.editing.id ? this.renderEditor() : nothing}
@@ -381,22 +386,23 @@ export class App extends LitElement {
 
   private renderNote(n: Note) {
     const canReorder = !this.filter;
-    return html`<div class="note ${this.selectedId === n.id ? "selected" : ""}" @click=${() => (this.selectedId = n.id)}>
-      <button class="ts" title="Jump to ${formatTime(n.t_secs)}" @click=${() => this.seek(n.t_secs)}>${formatTime(n.t_secs)}</button>
+    return html`<div class="note ${this.selectedId === n.id ? "selected" : ""}" role="listitem" @click=${() => (this.selectedId = n.id)}>
+      <button class="ts" title="Jump to ${formatTime(n.t_secs)}" aria-label="Jump to ${formatTime(n.t_secs)}" @click=${() => this.seek(n.t_secs)}>${formatTime(n.t_secs)}</button>
       <div class="grow body">${unsafeHTML(renderMarkdown(n.content))}</div>
       <div class="acts">
         ${canReorder ? html`
-          <button class="ghost" title="Move up" @click=${() => this.move(n, -1)}>${I.up}</button>
-          <button class="ghost" title="Move down" @click=${() => this.move(n, 1)}>${I.down}</button>` : nothing}
-        <button class="ghost" title="Edit" @click=${() => this.edit(n)}>${I.edit}</button>
-        <button class="ghost" title="Delete" @click=${() => this.del(n.id)}>${I.trash}</button>
+          <button class="ghost" title="Move up" aria-label="Move up" @click=${() => this.move(n, -1)}>${I.up}</button>
+          <button class="ghost" title="Move down" aria-label="Move down" @click=${() => this.move(n, 1)}>${I.down}</button>` : nothing}
+        <button class="ghost" title="Copy timestamp link" aria-label="Copy timestamp link" @click=${() => this.copyLink(n)}>${I.link}</button>
+        <button class="ghost" title="Edit" aria-label="Edit note" @click=${() => this.edit(n)}>${I.edit}</button>
+        <button class="ghost" title="Delete" aria-label="Delete note" @click=${() => this.del(n.id)}>${I.trash}</button>
       </div>
     </div>`;
   }
 
   private renderSearch() {
     return html`<div class="overlay" @click=${() => (this.searchOpen = false)}>
-      <div class="panel" @click=${(e: Event) => e.stopPropagation()}>
+      <div class="panel" role="dialog" aria-modal="true" aria-label="Search notes" @click=${(e: Event) => e.stopPropagation()}>
         <div class="sbar">${I.search}<input type="text" placeholder="Search all notes…" autofocus
           @input=${(e: Event) => this.runSearch((e.target as HTMLInputElement).value)} /></div>
         <div class="results">
@@ -412,7 +418,7 @@ export class App extends LitElement {
 
   private renderSettings() {
     return html`<div class="overlay" @click=${() => (this.settingsOpen = false)}>
-      <div class="panel" @click=${(e: Event) => e.stopPropagation()}>
+      <div class="panel" role="dialog" aria-modal="true" aria-label="Settings" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Settings</span>
           <button class="ghost" title="Close" @click=${() => (this.settingsOpen = false)}>${I.close}</button></div>
         <label class="field"><span>Theme</span>
