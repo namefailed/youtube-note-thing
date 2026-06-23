@@ -36,6 +36,11 @@ async fn set_video_tags(db: State<'_, Db>, id: String, tags: Vec<String>) -> Res
 }
 
 #[tauri::command]
+async fn set_ext_ref(db: State<'_, Db>, id: String, ext_ref: Option<String>) -> Result<(), String> {
+    db.set_ext_ref(&id, ext_ref.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
 async fn delete_video(db: State<'_, Db>, id: String) -> Result<(), String> {
     db.delete_video(&id).await.map_err(err)
 }
@@ -312,6 +317,7 @@ pub fn run() {
             set_video_title,
             set_last_pos,
             set_video_tags,
+            set_ext_ref,
             delete_video,
             list_notes,
             create_note,

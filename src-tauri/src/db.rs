@@ -22,6 +22,7 @@ pub struct VideoWithCount {
     pub manual_order: bool,
     pub note_count: i64,
     pub tags: Json<Vec<String>>,
+    pub ext_ref: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -34,6 +35,7 @@ pub struct Video {
     pub last_pos_secs: f64,
     pub manual_order: bool,
     pub tags: Json<Vec<String>>,
+    pub ext_ref: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -63,6 +65,8 @@ pub struct BackupVideo {
     pub duration: Option<i64>,
     pub last_pos_secs: f64,
     pub manual_order: bool,
+    pub tags: Json<Vec<String>>,
+    pub ext_ref: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -83,7 +87,7 @@ pub struct Backup {
 impl Db {
     pub async fn list_videos(&self) -> Result<Vec<VideoWithCount>, sqlx::Error> {
         sqlx::query_as::<_, VideoWithCount>(
-            "SELECT v.id, v.title, v.channel, v.url, v.duration, v.last_pos_secs, v.manual_order, v.tags,
+            "SELECT v.id, v.title, v.channel, v.url, v.duration, v.last_pos_secs, v.manual_order, v.tags, v.ext_ref,
                     (SELECT COUNT(*) FROM notes n WHERE n.video_id = v.id) AS note_count
              FROM videos v ORDER BY v.added_at DESC",
         )
@@ -98,11 +102,20 @@ impl Db {
             .execute(&self.pool)
             .await?;
         sqlx::query_as::<_, Video>(
-            "SELECT id, title, channel, url, duration, last_pos_secs, manual_order, tags FROM videos WHERE id = ?",
+            "SELECT id, title, channel, url, duration, last_pos_secs, manual_order, tags, ext_ref FROM videos WHERE id = ?",
         )
         .bind(id)
         .fetch_one(&self.pool)
         .await
+    }
+
+    pub async fn set_ext_ref(&self, id: &str, ext_ref: Option<&str>) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE videos SET ext_ref = ? WHERE id = ?")
+            .bind(ext_ref)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn set_tags(&self, id: &str, tags: &[String]) -> Result<(), sqlx::Error> {
@@ -243,7 +256,7 @@ impl Db {
 
     pub async fn export(&self) -> Result<Backup, sqlx::Error> {
         let videos = sqlx::query_as::<_, BackupVideo>(
-            "SELECT id, title, channel, url, duration, last_pos_secs, manual_order FROM videos",
+            "SELECT id, title, channel, url, duration, last_pos_secs, manual_order, tags, ext_ref FROM videos",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -259,8 +272,8 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         for v in &backup.videos {
             sqlx::query(
-                "INSERT OR IGNORE INTO videos (id, title, channel, url, duration, last_pos_secs, manual_order)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO videos (id, title, channel, url, duration, last_pos_secs, manual_order, tags, ext_ref)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&v.id)
             .bind(&v.title)
@@ -269,6 +282,8 @@ impl Db {
             .bind(v.duration)
             .bind(v.last_pos_secs)
             .bind(v.manual_order)
+            .bind(serde_json::to_string(&v.tags.0).unwrap_or_else(|_| "[]".to_string()))
+            .bind(v.ext_ref.as_deref())
             .execute(&mut *tx)
             .await?;
         }

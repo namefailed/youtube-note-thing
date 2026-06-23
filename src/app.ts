@@ -219,8 +219,7 @@ export class App extends LitElement {
     else this.phonemeHits = [];
   }
   private openPhonemeHit(h: PhonemeHit) {
-    const map = this.recMap();
-    const vid = Object.keys(map).find((k) => map[k] === h.id);
+    const vid = this.videos.find((v) => v.ext_ref === h.id)?.id;
     if (vid) { this.searchOpen = false; this.loadVideo(vid); }
     else this.flash("That Phoneme recording isn't linked to a video here.");
   }
@@ -268,19 +267,16 @@ export class App extends LitElement {
   }
 
   // ── Phoneme integration (optional) ──────────────────────────────────────
-  private recMap(): Record<string, string> {
-    try { return JSON.parse(localStorage.getItem("ytnt.phoneme") || "{}"); } catch { return {}; }
-  }
-  private recId(): string | null { return this.currentId ? (this.recMap()[this.currentId] ?? null) : null; }
-  private setRecId(rec: string) {
+  private recId(): string | null { return this.current?.ext_ref ?? null; }
+  private async setRecId(rec: string) {
     if (!this.currentId) return;
-    const m = this.recMap(); m[this.currentId] = rec; localStorage.setItem("ytnt.phoneme", JSON.stringify(m));
-    this.requestUpdate();
+    await api.setExtRef(this.currentId, rec);
+    await this.refreshVideos();
   }
   private async sendToPhoneme() {
     const v = this.current; if (!v) return;
     this.transcriptBusy = true; this.flash("Sending to Phoneme… (download + queue)");
-    try { const rec = await api.phonemeImport(v.url); this.setRecId(rec); this.flash("Queued — transcribing in Phoneme"); }
+    try { const rec = await api.phonemeImport(v.url); await this.setRecId(rec); this.flash("Queued — transcribing in Phoneme"); }
     catch (e) { this.flash(String(e)); }
     finally { this.transcriptBusy = false; }
   }
@@ -381,7 +377,7 @@ export class App extends LitElement {
                 @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
               <div class="meta">
                 <div class="t" title=${v.title || v.id}>${v.title || v.id}</div>
-                <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}${this.recMap()[v.id] ? html` · <span class="tx">transcript</span>` : nothing}</div>
+                <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}${v.ext_ref ? html` · <span class="tx">transcript</span>` : nothing}</div>
                 ${v.tags.length ? html`<div class="ctags">${v.tags.map((t) => html`<span class="ctag">${t}</span>`)}</div>` : nothing}
               </div>
               <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
@@ -405,11 +401,6 @@ export class App extends LitElement {
           </div>
           <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
         </div>` : nothing}
-        ${this.current ? html`<div class="vtags">
-          ${this.current.tags.map((t) => html`<span class="chip tag">${t}<button class="x" title="Remove tag" aria-label="Remove tag ${t}" @click=${() => this.removeTag(t)}>×</button></span>`)}
-          <input class="tag-add" type="text" placeholder="+ tag" aria-label="Add tag"
-            @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { this.addTag((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ""; } }} />
-        </div>` : nothing}
         <div id="playerWrap"><div id="player"></div></div>
         <div id="timeline" title="click to seek" @click=${(e: MouseEvent) => this.timelineClick(e)}>
           <div id="progress"></div>
@@ -417,6 +408,12 @@ export class App extends LitElement {
             title=${`${formatTime(n.t_secs)} — ${n.content}`}
             @click=${(e: Event) => { e.stopPropagation(); this.seek(n.t_secs); }}></div>`) : nothing}
         </div>
+
+        ${this.current ? html`<div class="vtags">
+          ${this.current.tags.map((t) => html`<span class="chip tag">${t}<button class="x" title="Remove tag" aria-label="Remove tag ${t}" @click=${() => this.removeTag(t)}>×</button></span>`)}
+          <input class="tag-add" type="text" placeholder="+ tag" aria-label="Add tag"
+            @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { this.addTag((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ""; } }} />
+        </div>` : nothing}
 
         <div class="toolbar">
           <div class="tabs">
@@ -605,7 +602,7 @@ export class App extends LitElement {
       border:1px solid var(--border); color:var(--fg-muted); display:inline-flex; align-items:center; gap:5px; transition:color .12s, border-color .12s; }
     .chip:hover { color:var(--fg-default); }
     .chip.on { background:var(--tint); border-color:var(--accent); color:var(--accent); }
-    .vtags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+    .vtags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:flex-end; margin-top:-4px; }
     .chip.tag { color:var(--fg-default); cursor:default; }
     .chip .x { background:none; border:none; padding:0; margin:0; color:var(--fg-faded); cursor:pointer; font-size:14px; line-height:1; }
     .chip .x:hover { color:var(--err); }
