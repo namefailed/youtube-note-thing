@@ -7,7 +7,12 @@ import { parseVideoId, formatTime, applyOffset, notesToMarkdown } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-const win = getCurrentWindow();
+// Lazy + guarded: outside the Tauri runtime (e.g. a browser preview) this is
+// absent, and the app must still render rather than fail to define the element.
+let _win: ReturnType<typeof getCurrentWindow> | null = null;
+function win() {
+  try { return (_win ??= getCurrentWindow()); } catch { return null; }
+}
 
 interface Settings { offset: number; autopause: boolean; vaultDir: string; }
 type Editing = { id?: string; t: number; draft: string } | null;
@@ -245,9 +250,9 @@ export class App extends LitElement {
       <header class="titlebar" data-tauri-drag-region>
         <span class="tb-title" data-tauri-drag-region><span class="dot"></span> youtube-note-thing</span>
         <div class="tb-controls">
-          <button class="tb-btn" title="Minimize" @click=${() => win.minimize()}>${I.min}</button>
-          <button class="tb-btn" title="Maximize" @click=${() => win.toggleMaximize()}>${I.max}</button>
-          <button class="tb-btn close" title="Close" @click=${() => win.close()}>${I.close}</button>
+          <button class="tb-btn" title="Minimize" @click=${() => win()?.minimize()}>${I.min}</button>
+          <button class="tb-btn" title="Maximize" @click=${() => win()?.toggleMaximize()}>${I.max}</button>
+          <button class="tb-btn close" title="Close" @click=${() => win()?.close()}>${I.close}</button>
         </div>
       </header>
       <aside>
@@ -291,7 +296,10 @@ export class App extends LitElement {
         </div>
 
         ${this.current ? html`<div class="nowplaying">
-          <span class="np-title" title=${this.current.title || this.current.id}>${this.current.title || this.current.id}</span>
+          <div class="np-main">
+            <div class="np-title" title=${this.current.title || this.current.id}>${this.current.title || this.current.id}</div>
+            <div class="np-meta">${this.current.channel || ""}${(this.dur || this.current.duration) ? html` · ${formatTime(this.dur || this.current.duration || 0)}` : nothing}</div>
+          </div>
           <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
         </div>` : nothing}
         <div id="playerWrap"><div id="player"></div></div>
@@ -405,7 +413,7 @@ export class App extends LitElement {
     .lib { flex:1; min-height:0; overflow:auto; padding:0 8px 8px; display:flex; flex-direction:column; gap:2px; }
     .libcard { display:flex; gap:9px; align-items:center; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; }
     .libcard:hover { background:var(--card); }
-    .libcard.active { background:var(--accent-weak); }
+    .libcard.active { background:var(--accent-weak); box-shadow:inset 3px 0 0 var(--accent); }
     .libcard .thumb { width:58px; height:33px; border-radius:5px; object-fit:cover; background:#000; flex:0 0 auto; }
     .libcard .meta { min-width:0; flex:1; }
     .libcard .t { font-size:12.5px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
@@ -418,8 +426,10 @@ export class App extends LitElement {
     .set { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12.5px; color:var(--dim); }
     .set.col { flex-direction:column; align-items:stretch; gap:4px; }
     .set.col input { width:100%; }
-    .nowplaying { display:flex; align-items:baseline; gap:10px; }
-    .np-title { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0; }
+    .nowplaying { display:flex; align-items:center; gap:12px; }
+    .np-main { flex:1; min-width:0; }
+    .np-title { font-weight:650; font-size:15.5px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .np-meta { font-size:12px; color:var(--faint); margin-top:1px; }
     .np-link { color:var(--dim); font-size:12px; cursor:pointer; flex:0 0 auto; }
     .np-link:hover { color:var(--accent); }
     .row2 { display:flex; gap:8px; }
@@ -435,15 +445,15 @@ export class App extends LitElement {
     .primary:hover { background:#e8434f; border-color:#e8434f; }
     .ghost { background:transparent; border-color:transparent; color:var(--dim); padding:6px; }
     .ghost:hover { background:var(--card); color:var(--text); }
-    input,textarea { font:inherit; color:var(--text); background:var(--elev); border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 11px; }
+    input,textarea { font:inherit; color:var(--text); background:var(--elev); border:1px solid var(--line); border-radius:var(--r-sm); padding:9px 12px; }
     input::placeholder,textarea::placeholder { color:var(--faint); }
     input[type=number] { width:54px; text-align:center; }
     input[type=checkbox] { accent-color:var(--accent); width:15px; height:15px; }
 
-    main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:16px; gap:12px; }
+    main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; }
     .topbar { display:flex; gap:8px; }
     .topbar input { flex:1; }
-    #playerWrap { position:relative; background:#000; border-radius:var(--r); overflow:hidden; aspect-ratio:16/9; max-height:46vh; flex:0 0 auto; box-shadow:0 8px 30px rgba(0,0,0,.45); }
+    #playerWrap { position:relative; background:#000; border:1px solid var(--line-soft); border-radius:var(--r); overflow:hidden; aspect-ratio:16/9; max-height:46vh; flex:0 0 auto; box-shadow:0 10px 34px rgba(0,0,0,.45); }
     #player { width:100%; height:100%; }
     #timeline { position:relative; height:10px; background:var(--elev); border-radius:99px; cursor:pointer; flex:0 0 auto; margin:2px 0; }
     #progress { position:absolute; inset:0 100% 0 0; background:linear-gradient(90deg,var(--accent),#ff7a82); border-radius:99px; }
@@ -454,14 +464,14 @@ export class App extends LitElement {
     .kbd { font-size:11px; color:rgba(255,255,255,.75); font-weight:500; padding-left:2px; }
     .status { color:var(--dim); font-size:12px; white-space:nowrap; }
 
-    .notes { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:7px; padding-right:2px; }
-    .note { display:flex; gap:11px; align-items:flex-start; background:var(--card); border:1px solid var(--line-soft); border-radius:var(--r); padding:10px 12px; transition:border-color .12s; }
-    .note:hover { border-color:var(--line); }
+    .notes { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:8px; padding-right:3px; }
+    .note { display:flex; gap:12px; align-items:flex-start; background:var(--card); border:1px solid var(--line-soft); border-radius:var(--r); padding:12px 14px; transition:border-color .12s, box-shadow .12s; }
+    .note:hover { border-color:var(--line); box-shadow:0 2px 14px rgba(0,0,0,.28); }
     .note.selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
     .ts { flex:0 0 auto; font-variant-numeric:tabular-nums; font-size:12px; font-weight:600; color:var(--accent);
       background:var(--accent-weak); border:none; border-radius:6px; padding:3px 8px; cursor:pointer; margin-top:1px; }
     .ts:hover { filter:brightness(1.18); }
-    .body { flex:1; min-width:0; word-break:break-word; }
+    .body { flex:1; min-width:0; word-break:break-word; font-size:14px; line-height:1.55; }
     .body>:first-child { margin-top:0; } .body>:last-child { margin-bottom:0; }
     .body p { margin:.3em 0; } .body a { color:var(--accent); }
     .body code { background:var(--elev); padding:1px 5px; border-radius:4px; font-size:.9em; }
