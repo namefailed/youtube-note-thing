@@ -485,22 +485,24 @@ export class App extends LitElement {
       </aside>
 
       <main ?inert=${trapped}>
-        <div class="topbar">
-          ${!this.currentId ? html`
-            <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
-              @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
-            <button class="primary" @click=${() => this.addFromInput()}>Load</button>
-          ` : html`<span class="grow"></span>`}
+        ${!this.currentId ? html`<div class="topbar">
+          <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
+            @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
+          <button class="primary" @click=${() => this.addFromInput()}>Load</button>
           <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
           <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
-        </div>
+        </div>` : nothing}
 
         ${this.current ? html`<div class="nowplaying">
           <div class="np-main">
             <div class="np-title" title=${this.current.title || this.current.id}>${this.current.title || this.current.id}</div>
             <div class="np-meta">${this.current.channel || ""}${(this.dur || this.current.duration) ? html` · ${formatTime(this.dur || this.current.duration || 0)}` : nothing}</div>
           </div>
-          <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
+          <div class="np-actions">
+            <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
+            <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
+            <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
+          </div>
         </div>` : nothing}
         <div id="playerWrap" class=${this.currentId ? "" : "hidden"}><div id="player"></div></div>
         <div id="timeline" class=${this.currentId ? "" : "hidden"} title="click to seek" @click=${(e: MouseEvent) => this.timelineClick(e)}>
@@ -781,12 +783,13 @@ export class App extends LitElement {
     main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; }
     .topbar { display:flex; gap:8px; }
     .topbar input { flex:1; }
-    .topbar input, .topbar .ghost, .topbar .primary { height:32px; box-sizing:border-box; border-radius:6px; }
+    .topbar input, .topbar .ghost, .topbar .primary, .np-actions .ghost { height:32px; box-sizing:border-box; border-radius:6px; }
     .topbar input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
     .topbar input:focus-visible { outline:none; border-color:var(--kbd-cursor, var(--accent)); }
-    .topbar .ghost { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); background:var(--bg-elevated); color:var(--fg-muted); padding:0 10px; }
-    .topbar .ghost:hover { border-color:var(--accent); color:var(--fg-default); background:var(--border-subtle); }
+    .topbar .ghost, .np-actions .ghost { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); background:var(--bg-elevated); color:var(--fg-muted); padding:0 10px; }
+    .topbar .ghost:hover, .np-actions .ghost:hover { border-color:var(--accent); color:var(--fg-default); background:var(--border-subtle); }
     .nowplaying { display:flex; align-items:center; gap:12px; }
+    .np-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
     .np-main { flex:1; min-width:0; }
     .np-title { font-weight:650; font-size:15.5px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .np-meta { font-size:12px; color:var(--fg-faded); margin-top:1px; }
