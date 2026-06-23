@@ -30,6 +30,7 @@ const I = {
   down: svg`<svg viewBox="0 0 24 24" class="i"><path d="M6 9l6 6 6-6"/></svg>`,
   close: svg`<svg viewBox="0 0 24 24" class="i"><path d="M18 6L6 18M6 6l12 12"/></svg>`,
   menu: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 6h16M4 12h16M4 18h16"/></svg>`,
+  chev: svg`<svg viewBox="0 0 24 24" class="i"><path d="M9 6l6 6-6 6"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -43,6 +44,10 @@ const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 function isVisible(el: HTMLElement): boolean {
   return el.checkVisibility ? el.checkVisibility() : el.offsetParent !== null;
+}
+const LIGHT_THEMES = new Set(["catppuccin-latte", "gruvbox-light", "rose-pine-dawn", "solarized-light", "tokyo-night-day"]);
+function themeLabel(slug: string): string {
+  return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
 interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; }
@@ -63,6 +68,9 @@ export class App extends LitElement {
   @state() private status = "";
   @state() private selectedId: string | null = null;
   @state() private tagFilter: string | null = null;
+  @state() private libView: "all" | "transcript" = "all";
+  @state() private folds: Record<string, boolean> = {};
+  @state() private cheatOpen = false;
   @state() private phonemeOk = false;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private segments: Segment[] = [];
@@ -75,9 +83,11 @@ export class App extends LitElement {
   private settings: Settings = loadSettings();
 
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen)) { this.closeModal(); return; }
+    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen)) { this.cheatOpen = false; this.closeModal(); return; }
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
-    if (typing || this.searchOpen || this.settingsOpen) return;
+    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen) return;
+    if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
+    if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
     if (!this.currentId) return;
     // Transport — drives the player via its JS API, so it works regardless of
@@ -398,6 +408,7 @@ export class App extends LitElement {
     this.sidebarOpen = !this.sidebarOpen;
     localStorage.setItem("ytnt.sidebar", this.sidebarOpen ? "1" : "0");
   }
+  private toggleFold(k: string) { this.folds = { ...this.folds, [k]: !this.folds[k] }; }
   updated() { this.toggleAttribute("collapsed", !this.sidebarOpen); }
   private allTags(): string[] {
     return [...new Set(this.videos.flatMap((v) => v.tags))].sort((a, b) => a.localeCompare(b));
@@ -415,13 +426,15 @@ export class App extends LitElement {
   render() {
     const filtered = this.displayed();
     const tags = this.allTags();
-    const vids = this.tagFilter ? this.videos.filter((v) => v.tags.includes(this.tagFilter!)) : this.videos;
-    const trapped = this.searchOpen || this.settingsOpen;
+    const transcriptCount = this.videos.filter((v) => v.ext_ref).length;
+    let vids = this.libView === "transcript" ? this.videos.filter((v) => v.ext_ref) : this.videos;
+    if (this.tagFilter) vids = vids.filter((v) => v.tags.includes(this.tagFilter!));
+    const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen;
     return html`
       <header class="titlebar" data-tauri-drag-region ?inert=${trapped}>
         <div class="tb-left" data-tauri-drag-region>
           <button class="tb-btn" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
-          <span class="tb-title"><span class="dot"></span> youtube-note-thing</span>
+          <span class="tb-title"><span class="dot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span> youtube-note-thing</span>
         </div>
         <div class="tb-controls">
           <button class="tb-btn" title="Minimize" @click=${() => win()?.minimize()}>${I.min}</button>
@@ -431,10 +444,30 @@ export class App extends LitElement {
       </header>
 
       <aside ?inert=${trapped}>
-        <div class="label">Library</div>
-        ${tags.length ? html`<div class="tagbar">
-          <button class="chip ${!this.tagFilter ? "on" : ""}" @click=${() => (this.tagFilter = null)}>All</button>
-          ${tags.map((t) => html`<button class="chip ${this.tagFilter === t ? "on" : ""}" @click=${() => (this.tagFilter = this.tagFilter === t ? null : t)}>${t}</button>`)}
+        <div class="section">
+          <button class="sec-head" @click=${() => this.toggleFold("lib")}>
+            <span class="chev ${this.folds.lib ? "" : "open"}">${I.chev}</span> Library
+          </button>
+          ${!this.folds.lib ? html`
+            <button class="sidebar-item ${this.libView === "all" && !this.tagFilter ? "on" : ""}"
+              @click=${() => { this.libView = "all"; this.tagFilter = null; }}>
+              <span class="si-label">All videos</span><span class="count">${this.videos.length}</span>
+            </button>
+            <button class="sidebar-item ${this.libView === "transcript" ? "on" : ""}"
+              @click=${() => { this.libView = "transcript"; this.tagFilter = null; }}>
+              <span class="si-label">With transcript</span><span class="count">${transcriptCount}</span>
+            </button>` : nothing}
+        </div>
+        ${tags.length ? html`<div class="section">
+          <button class="sec-head" @click=${() => this.toggleFold("tags")}>
+            <span class="chev ${this.folds.tags ? "" : "open"}">${I.chev}</span> Tags
+          </button>
+          ${!this.folds.tags ? tags.map((t) => html`
+            <button class="sidebar-item ${this.tagFilter === t ? "on" : ""}"
+              @click=${() => (this.tagFilter = this.tagFilter === t ? null : t)}>
+              <span class="dot"></span><span class="si-label">${t}</span>
+              <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
+            </button>`) : nothing}
         </div>` : nothing}
         <div class="lib">
           ${vids.length ? vids.map((v) => html`
@@ -516,6 +549,7 @@ export class App extends LitElement {
 
       ${this.searchOpen ? this.renderSearch() : nothing}
       ${this.settingsOpen ? this.renderSettings() : nothing}
+      ${this.cheatOpen ? this.renderCheat() : nothing}
     `;
   }
 
@@ -577,7 +611,12 @@ export class App extends LitElement {
           <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
         <label class="field"><span>Theme</span>
           <select @change=${(e: Event) => this.setSetting("theme", (e.target as HTMLSelectElement).value)}>
-            ${THEMES.map((t) => html`<option value=${t} ?selected=${t === this.settings.theme}>${t}</option>`)}
+            <optgroup label="Dark">
+              ${THEMES.filter((t) => !LIGHT_THEMES.has(t)).map((t) => html`<option value=${t} ?selected=${t === this.settings.theme}>${themeLabel(t)}</option>`)}
+            </optgroup>
+            <optgroup label="Light">
+              ${THEMES.filter((t) => LIGHT_THEMES.has(t)).map((t) => html`<option value=${t} ?selected=${t === this.settings.theme}>${themeLabel(t)}</option>`)}
+            </optgroup>
           </select></label>
         <label class="field"><span>Auto-pause when adding a note</span>
           <input type="checkbox" .checked=${this.settings.autopause}
@@ -624,11 +663,38 @@ export class App extends LitElement {
     </div></div>`;
   }
 
+  private renderCheat() {
+    const rows: [string, string][] = [
+      ["Alt+N", "Add note at the current moment"],
+      ["Space / K", "Play / pause"],
+      ["J / L", "Back / forward 10s"],
+      ["← / →", "Back / forward 5s  (Shift = 30s)"],
+      ["+ / −", "Playback speed up / down"],
+      ["M / F", "Mute / fullscreen"],
+      ["0–9", "Seek to 0–90%"],
+      ["↑ / ↓", "Select previous / next note"],
+      ["Enter / Delete", "Edit / delete selected note"],
+      ["/", "Search all notes"],
+      ["?", "Keyboard shortcuts (this)"],
+      ["Esc", "Close dialog / cancel"],
+    ];
+    return html`<div class="overlay" @click=${() => (this.cheatOpen = false)} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+      <div class="panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" @click=${(e: Event) => e.stopPropagation()}>
+        <div class="panel-head"><span>Keyboard shortcuts</span>
+          <button class="ghost" title="Close" @click=${() => (this.cheatOpen = false)}>${I.close}</button></div>
+        <div class="cheat">
+          ${rows.map(([k, d]) => html`<div class="cheat-row"><kbd>${k}</kbd><span>${d}</span></div>`)}
+        </div>
+      </div>
+    </div>`;
+  }
+
   static styles = css`
     :host {
       --r:10px; --r-sm:8px;
       --tint: color-mix(in srgb, var(--accent) 15%, transparent);
       --hover: color-mix(in srgb, var(--fg-default) 8%, transparent);
+      --ui-motion: 200ms; --ui-motion-fast: 120ms;
       display:grid; grid-template-columns:264px 1fr; grid-template-rows:32px minmax(0,1fr);
       height:100vh; background:var(--bg-deep); color:var(--fg-default);
       font:13.5px/1.55 "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -637,6 +703,7 @@ export class App extends LitElement {
     :host([collapsed]) { grid-template-columns:0 1fr; }
     .hidden { display:none !important; }
     .tb-left { display:flex; align-items:center; }
+    @media (prefers-reduced-motion: reduce) { :host { --ui-motion: 0ms; --ui-motion-fast: 0ms; } }
     * { box-sizing:border-box; }
     ::selection { background:var(--tint); }
     *::-webkit-scrollbar { width:10px; height:10px; }
@@ -648,7 +715,8 @@ export class App extends LitElement {
     .titlebar { grid-column:1/-1; display:flex; align-items:center; justify-content:space-between;
       background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); user-select:none; }
     .tb-title { display:flex; align-items:center; gap:8px; padding-left:12px; font-size:12.5px; font-weight:600; }
-    .tb-title .dot { width:9px; height:9px; border-radius:3px; background:var(--accent); box-shadow:0 0 10px color-mix(in srgb, var(--accent) 70%, transparent); }
+    .tb-title .dot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); transition:background var(--ui-motion-fast); }
+    .tb-title .dot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
     .tb-controls { display:flex; align-self:stretch; }
     .tb-btn { width:46px; border:none; border-radius:0; background:transparent; color:var(--fg-muted); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
     .tb-btn:hover { background:var(--hover); color:var(--fg-default); }
@@ -670,6 +738,19 @@ export class App extends LitElement {
     .libcard .rm { opacity:0; position:absolute; top:5px; right:5px; padding:3px; }
     .libcard:hover .rm { opacity:.65; } .libcard .rm:hover { opacity:1; }
     .empty-lib { color:var(--fg-faded); font-size:12px; padding:6px 16px; }
+    .section { border-bottom:1px solid var(--border-subtle); padding:2px 8px 6px; }
+    .sec-head { width:100%; display:flex; align-items:center; gap:6px; background:none; border:none; padding:8px 8px 4px; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); cursor:pointer; }
+    .sec-head:hover { background:none; color:var(--fg-muted); }
+    .chev { display:inline-flex; transition:transform var(--ui-motion-fast); }
+    .chev .i { width:13px; height:13px; }
+    .chev.open { transform:rotate(90deg); }
+    .sidebar-item { width:100%; display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:var(--r-sm); background:none; border:1px solid transparent; color:var(--fg-muted); cursor:pointer; font-size:12.5px; transition:background var(--ui-motion-fast), color var(--ui-motion-fast); }
+    .sidebar-item:hover { background:var(--hover); color:var(--fg-default); }
+    .sidebar-item.on { background:var(--tint); color:var(--accent); }
+    .sidebar-item .si-label { flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .sidebar-item .count { font-size:11px; color:var(--fg-faded); background:var(--bg-deep); border-radius:999px; padding:1px 7px; min-width:20px; text-align:center; }
+    .sidebar-item.on .count { color:var(--accent); }
+    .sidebar-item .dot { width:8px; height:8px; border-radius:999px; background:var(--accent); opacity:.85; flex:0 0 auto; }
     .tagbar { display:flex; flex-wrap:wrap; gap:5px; padding:0 12px 8px; }
     .chip { font:inherit; font-size:11.5px; padding:3px 9px; border-radius:999px; cursor:pointer; background:var(--bg-elevated);
       border:1px solid var(--border); color:var(--fg-muted); display:inline-flex; align-items:center; gap:5px; transition:color .12s, border-color .12s; }
@@ -700,6 +781,11 @@ export class App extends LitElement {
     main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; }
     .topbar { display:flex; gap:8px; }
     .topbar input { flex:1; }
+    .topbar input, .topbar .ghost, .topbar .primary { height:32px; box-sizing:border-box; border-radius:6px; }
+    .topbar input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
+    .topbar input:focus-visible { outline:none; border-color:var(--kbd-cursor, var(--accent)); }
+    .topbar .ghost { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); background:var(--bg-elevated); color:var(--fg-muted); padding:0 10px; }
+    .topbar .ghost:hover { border-color:var(--accent); color:var(--fg-default); background:var(--border-subtle); }
     .nowplaying { display:flex; align-items:center; gap:12px; }
     .np-main { flex:1; min-width:0; }
     .np-title { font-weight:650; font-size:15.5px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -765,6 +851,10 @@ export class App extends LitElement {
     .hit:hover { background:var(--hover); }
     .hit .htitle { font-weight:600; }
     .src-label { font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--fg-faded); padding:10px 10px 3px; border-top:1px solid var(--border-subtle); margin-top:4px; }
+    .cheat { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; align-items:center; overflow:auto; }
+    .cheat-row { display:contents; }
+    .cheat kbd { justify-self:start; font:inherit; font-size:11.5px; background:var(--bg-elevated); border:1px solid var(--border); border-bottom-width:2px; border-radius:5px; padding:1px 7px; color:var(--fg-default); white-space:nowrap; }
+    .cheat-row span { color:var(--fg-muted); }
   `;
 }
 
