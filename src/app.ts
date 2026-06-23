@@ -64,10 +64,11 @@ export class App extends LitElement {
 
   private player: Player | null = null;
   private lastSaved = 0;
+  private lastFocus: HTMLElement | null = null;
   private settings: Settings = loadSettings();
 
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen)) { this.searchOpen = false; this.settingsOpen = false; return; }
+    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen)) { this.closeModal(); return; }
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
     if (typing || this.searchOpen || this.settingsOpen) return;
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
@@ -224,6 +225,34 @@ export class App extends LitElement {
     const vid = this.videos.find((v) => v.ext_ref === h.id)?.id;
     if (vid) { this.searchOpen = false; this.loadVideo(vid); }
     else this.flash("That Phoneme recording isn't linked to a video here.");
+  }
+
+  // ── Modal focus management (a11y) ────────────────────────────────────────
+  private openModal(which: "search" | "settings") {
+    this.lastFocus = ((this.renderRoot as ShadowRoot).activeElement as HTMLElement) ?? null;
+    if (which === "search") { this.searchResults = []; this.phonemeHits = []; this.searchOpen = true; }
+    else this.settingsOpen = true;
+    this.updateComplete.then(() => {
+      const panel = this.renderRoot.querySelector(".overlay .panel") as HTMLElement | null;
+      panel?.querySelector<HTMLElement>("input,select,button,a[href],textarea,[tabindex]")?.focus();
+    });
+  }
+  private closeModal() {
+    this.searchOpen = false; this.settingsOpen = false;
+    this.updateComplete.then(() => this.lastFocus?.focus());
+  }
+  private trapTab(e: KeyboardEvent) {
+    if (e.key !== "Tab") return;
+    const panel = this.renderRoot.querySelector(".overlay .panel") as HTMLElement | null;
+    if (!panel) return;
+    const items = [...panel.querySelectorAll<HTMLElement>(
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+    )].filter((el) => el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    const active = (this.renderRoot as ShadowRoot).activeElement;
+    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
   }
   private async openHit(h: SearchHit) {
     this.searchOpen = false;
@@ -411,8 +440,8 @@ export class App extends LitElement {
               @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
             <button class="primary" @click=${() => this.addFromInput()}>Load</button>
           ` : html`<span class="grow"></span>`}
-          <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => { this.searchOpen = true; this.searchResults = []; this.phonemeHits = []; }}>${I.search}</button>
-          <button class="ghost" title="Settings" aria-label="Settings" @click=${() => (this.settingsOpen = true)}>${I.gear}</button>
+          <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
+          <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
         </div>
 
         ${this.current ? html`<div class="nowplaying">
@@ -504,7 +533,7 @@ export class App extends LitElement {
   }
 
   private renderSearch() {
-    return html`<div class="overlay" @click=${() => (this.searchOpen = false)}>
+    return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Search notes" @click=${(e: Event) => e.stopPropagation()}>
         <div class="sbar">${I.search}<input type="text" placeholder="Search all notes…" autofocus
           @input=${(e: Event) => this.runSearch((e.target as HTMLInputElement).value)} /></div>
@@ -524,10 +553,10 @@ export class App extends LitElement {
   }
 
   private renderSettings() {
-    return html`<div class="overlay" @click=${() => (this.settingsOpen = false)}>
+    return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Settings" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Settings</span>
-          <button class="ghost" title="Close" @click=${() => (this.settingsOpen = false)}>${I.close}</button></div>
+          <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
         <label class="field"><span>Theme</span>
           <select @change=${(e: Event) => this.setSetting("theme", (e.target as HTMLSelectElement).value)}>
             ${THEMES.map((t) => html`<option value=${t} ?selected=${t === this.settings.theme}>${t}</option>`)}
