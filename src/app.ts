@@ -28,6 +28,7 @@ const I = {
   up: svg`<svg viewBox="0 0 24 24" class="i"><path d="M18 15l-6-6-6 6"/></svg>`,
   down: svg`<svg viewBox="0 0 24 24" class="i"><path d="M6 9l6 6 6-6"/></svg>`,
   close: svg`<svg viewBox="0 0 24 24" class="i"><path d="M18 6L6 18M6 6l12 12"/></svg>`,
+  menu: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 6h16M4 12h16M4 18h16"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -59,6 +60,7 @@ export class App extends LitElement {
   @state() private view: "notes" | "transcript" = "notes";
   @state() private segments: Segment[] = [];
   @state() private transcriptBusy = false;
+  @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
 
   private player: Player | null = null;
   private lastSaved = 0;
@@ -337,6 +339,20 @@ export class App extends LitElement {
     if (this.currentId === id) { this.currentId = null; this.notes = []; }
     await this.refreshVideos();
   }
+  private toggleVideo(id: string, url: string) {
+    if (id === this.currentId) this.deselect();
+    else this.loadVideo(id, url);
+  }
+  private deselect() {
+    this.currentId = null; this.notes = []; this.segments = [];
+    this.view = "notes"; this.editing = null; this.selectedId = null;
+    this.player?.pause();
+  }
+  private toggleSidebar() {
+    this.sidebarOpen = !this.sidebarOpen;
+    localStorage.setItem("ytnt.sidebar", this.sidebarOpen ? "1" : "0");
+  }
+  updated() { this.toggleAttribute("collapsed", !this.sidebarOpen); }
   private allTags(): string[] {
     return [...new Set(this.videos.flatMap((v) => v.tags))].sort((a, b) => a.localeCompare(b));
   }
@@ -356,7 +372,10 @@ export class App extends LitElement {
     const vids = this.tagFilter ? this.videos.filter((v) => v.tags.includes(this.tagFilter!)) : this.videos;
     return html`
       <header class="titlebar" data-tauri-drag-region>
-        <span class="tb-title" data-tauri-drag-region><span class="dot"></span> youtube-note-thing</span>
+        <div class="tb-left" data-tauri-drag-region>
+          <button class="tb-btn" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
+          <span class="tb-title"><span class="dot"></span> youtube-note-thing</span>
+        </div>
         <div class="tb-controls">
           <button class="tb-btn" title="Minimize" @click=${() => win()?.minimize()}>${I.min}</button>
           <button class="tb-btn" title="Maximize" @click=${() => win()?.toggleMaximize()}>${I.max}</button>
@@ -372,7 +391,7 @@ export class App extends LitElement {
         </div>` : nothing}
         <div class="lib">
           ${vids.length ? vids.map((v) => html`
-            <div class="libcard ${v.id === this.currentId ? "active" : ""}" @click=${() => this.loadVideo(v.id, v.url)}>
+            <div class="libcard ${v.id === this.currentId ? "active" : ""}" @click=${() => this.toggleVideo(v.id, v.url)}>
               <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                 @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
               <div class="meta">
@@ -387,9 +406,11 @@ export class App extends LitElement {
 
       <main>
         <div class="topbar">
-          <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
-            @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
-          <button class="primary" @click=${() => this.addFromInput()}>Load</button>
+          ${!this.currentId ? html`
+            <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
+              @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
+            <button class="primary" @click=${() => this.addFromInput()}>Load</button>
+          ` : html`<span class="grow"></span>`}
           <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => { this.searchOpen = true; this.searchResults = []; this.phonemeHits = []; }}>${I.search}</button>
           <button class="ghost" title="Settings" aria-label="Settings" @click=${() => (this.settingsOpen = true)}>${I.gear}</button>
         </div>
@@ -401,8 +422,8 @@ export class App extends LitElement {
           </div>
           <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
         </div>` : nothing}
-        <div id="playerWrap"><div id="player"></div></div>
-        <div id="timeline" title="click to seek" @click=${(e: MouseEvent) => this.timelineClick(e)}>
+        <div id="playerWrap" class=${this.currentId ? "" : "hidden"}><div id="player"></div></div>
+        <div id="timeline" class=${this.currentId ? "" : "hidden"} title="click to seek" @click=${(e: MouseEvent) => this.timelineClick(e)}>
           <div id="progress"></div>
           ${this.dur ? this.notes.map((n) => html`<div class="marker" style="left:${(n.t_secs / this.dur) * 100}%"
             title=${`${formatTime(n.t_secs)} — ${n.content}`}
@@ -415,7 +436,7 @@ export class App extends LitElement {
             @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { this.addTag((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ""; } }} />
         </div>` : nothing}
 
-        <div class="toolbar">
+        <div class="toolbar ${this.currentId ? "" : "hidden"}">
           <div class="tabs">
             <button class="tab ${this.view === "notes" ? "on" : ""}" @click=${() => (this.view = "notes")}>Notes</button>
             <button class="tab ${this.view === "transcript" ? "on" : ""}" @click=${() => (this.view = "transcript")}>Transcript</button>
@@ -564,6 +585,9 @@ export class App extends LitElement {
       font:13.5px/1.55 "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
       -webkit-font-smoothing:antialiased;
     }
+    :host([collapsed]) { grid-template-columns:0 1fr; }
+    .hidden { display:none !important; }
+    .tb-left { display:flex; align-items:center; }
     * { box-sizing:border-box; }
     ::selection { background:var(--tint); }
     *::-webkit-scrollbar { width:10px; height:10px; }
@@ -581,7 +605,7 @@ export class App extends LitElement {
     .tb-btn:hover { background:var(--hover); color:var(--fg-default); }
     .tb-btn.close:hover { background:var(--err); color:var(--bg-deep); }
 
-    aside { background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-height:0; }
+    aside { background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-height:0; overflow:hidden; }
     .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); padding:14px 16px 6px; }
     .lib { flex:1; min-height:0; overflow:auto; padding:0 8px 8px; display:flex; flex-direction:column; gap:2px; }
     .libcard { display:flex; gap:9px; align-items:center; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; transition:background .12s; }
