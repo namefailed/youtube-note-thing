@@ -147,6 +147,25 @@ impl Db {
         Ok(())
     }
 
+    /// Bulk-insert videos from a playlist import (id, title). Existing ids are left
+    /// untouched. Returns how many were newly added.
+    pub async fn import_playlist(&self, items: &[(String, String)]) -> Result<usize, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let mut n = 0usize;
+        for (id, title) in items {
+            let url = format!("https://youtu.be/{id}");
+            let res = sqlx::query("INSERT OR IGNORE INTO videos (id, url, title) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(&url)
+                .bind(title)
+                .execute(&mut *tx)
+                .await?;
+            n += res.rows_affected() as usize;
+        }
+        tx.commit().await?;
+        Ok(n)
+    }
+
     pub async fn set_last_pos(&self, id: &str, secs: f64) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE videos SET last_pos_secs = ? WHERE id = ?")
             .bind(secs)

@@ -1,6 +1,12 @@
 // Pure helpers: URL parsing, time formatting, capture offset, timestamp links.
 // TODO: re-add unit coverage as a vitest test (see plans/TESTING_STRATEGY.md).
 
+export function parsePlaylistId(input: string): string | null {
+  if (!input) return null;
+  const m = String(input).match(/[?&]list=([A-Za-z0-9_-]+)/);
+  return m ? m[1] : null;
+}
+
 export function parseVideoId(input: string): string | null {
   if (!input) return null;
   const s = String(input).trim();

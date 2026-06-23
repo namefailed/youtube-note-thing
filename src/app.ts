@@ -3,7 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit } from "./api";
 import { Player } from "./player";
-import { parseVideoId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
+import { parseVideoId, parsePlaylistId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check } from "@tauri-apps/plugin-updater";
@@ -189,11 +189,24 @@ export class App extends LitElement {
     await this.refreshNotes();
   }
 
-  private addFromInput() {
+  private async addFromInput() {
     const input = this.renderRoot.querySelector("#url") as HTMLInputElement;
-    const id = parseVideoId(input.value);
+    const raw = input.value.trim();
+    const list = parsePlaylistId(raw);
+    const id = parseVideoId(raw);
+    if (list) {
+      input.value = "";
+      this.flash("Importing playlist…");
+      try {
+        const n = await api.importYoutubePlaylist(list);
+        await this.refreshVideos();
+        this.flash(n ? `Imported ${n} video${n > 1 ? "s" : ""} from playlist` : "Playlist already in your library", "ok");
+      } catch (e) { this.flash(String(e), "err"); }
+      if (id) this.loadVideo(id, raw);
+      return;
+    }
     if (!id) { this.flash("Not a valid YouTube URL", "err"); return; }
-    const raw = input.value.trim(); input.value = "";
+    input.value = "";
     this.loadVideo(id, /^https?:/.test(raw) ? raw : `https://youtu.be/${id}`);
   }
 
@@ -582,7 +595,7 @@ export class App extends LitElement {
       <main ?inert=${trapped}>
         ${!this.currentId ? html`<div class="topbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
           <button class="ham" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
-          <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
+          <input id="url" type="text" placeholder="Paste a YouTube video or playlist link…" autocomplete="off"
             @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
           <button class="primary" @click=${() => this.addFromInput()}>Load</button>
           <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>

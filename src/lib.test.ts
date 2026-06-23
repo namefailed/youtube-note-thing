@@ -1,7 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { parseVideoId, formatTime, applyOffset, tsLink, notesToMarkdown } from "./lib";
+import { parseVideoId, parsePlaylistId, formatTime, applyOffset, tsLink, notesToMarkdown } from "./lib";
 
 const ID = "dQw4w9WgXcQ";
+
+describe("parsePlaylistId", () => {
+  it("pulls the list id from playlist + watch URLs", () => {
+    expect(parsePlaylistId("https://www.youtube.com/playlist?list=PLabc123_-")).toBe("PLabc123_-");
+    expect(parsePlaylistId(`https://www.youtube.com/watch?v=${ID}&list=PLxyz`)).toBe("PLxyz");
+  });
+  it("returns null when there's no list param", () => {
+    expect(parsePlaylistId(`https://youtu.be/${ID}`)).toBeNull();
+    expect(parsePlaylistId("")).toBeNull();
+  });
+});
 
 describe("parseVideoId", () => {
   it("accepts every common YouTube URL shape", () => {

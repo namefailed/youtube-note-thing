@@ -292,6 +292,65 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
     Ok(segs)
 }
 
+/// Best-effort playlist import via InnerTube (no auth) — works for any public or
+/// unlisted playlist. Private playlists (incl. Watch Later) need a logged-in
+/// session and return empty here; use the Google-account path for those.
+fn collect_playlist_videos(v: &serde_json::Value, out: &mut Vec<(String, String)>) {
+    match v {
+        serde_json::Value::Object(m) => {
+            if let Some(r) = m.get("playlistVideoRenderer") {
+                if let Some(id) = r.get("videoId").and_then(|x| x.as_str()) {
+                    let title = r
+                        .pointer("/title/runs/0/text")
+                        .and_then(|x| x.as_str())
+                        .or_else(|| r.pointer("/title/simpleText").and_then(|x| x.as_str()))
+                        .unwrap_or("")
+                        .to_string();
+                    out.push((id.to_string(), title));
+                    return;
+                }
+            }
+            for val in m.values() {
+                collect_playlist_videos(val, out);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for val in a {
+                collect_playlist_videos(val, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[tauri::command]
+async fn import_youtube_playlist(db: State<'_, Db>, playlist_id: String) -> Result<usize, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0")
+        .build()
+        .map_err(err)?;
+    let key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"; // public WEB InnerTube key
+    let body = serde_json::json!({
+        "context": { "client": { "clientName": "WEB", "clientVersion": "2.20240101.00.00" } },
+        "browseId": format!("VL{playlist_id}"),
+    });
+    let v: serde_json::Value = client
+        .post(format!("https://www.youtube.com/youtubei/v1/browse?key={key}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(err)?
+        .json()
+        .await
+        .map_err(err)?;
+    let mut vids = Vec::new();
+    collect_playlist_videos(&v, &mut vids);
+    if vids.is_empty() {
+        return Err("No videos found — the playlist may be private, empty, or unavailable.".into());
+    }
+    db.import_playlist(&vids).await.map_err(err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -343,6 +402,7 @@ pub fn run() {
             phoneme_segments,
             phoneme_search,
             youtube_captions,
+            import_youtube_playlist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

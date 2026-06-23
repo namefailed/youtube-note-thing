@@ -47,4 +47,6 @@ export const api = {
   phonemeSearch: (query: string) => invoke<PhonemeHit[]>("phoneme_search", { query }),
   youtubeCaptions: (videoId: string, lang?: string) =>
     invoke<Segment[]>("youtube_captions", { videoId, lang: lang ?? null }),
+  importYoutubePlaylist: (playlistId: string) =>
+    invoke<number>("import_youtube_playlist", { playlistId }),
 };
