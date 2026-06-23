@@ -1068,7 +1068,7 @@ export class App extends LitElement {
     .np-link:hover { color:var(--accent); }
     #playerWrap { position:relative; background:#000; border:1px solid var(--border-subtle); border-radius:var(--r); overflow:hidden; aspect-ratio:16/9; width:100%; max-width:calc(68vh * 16 / 9); align-self:center; flex:0 0 auto; box-shadow:0 10px 34px rgba(0,0,0,.45); }
     #player { width:100%; height:100%; }
-    .fs-btn { position:absolute; bottom:10px; left:10px; z-index:4; display:inline-flex; padding:7px; border-radius:var(--r-sm);
+    .fs-btn { position:absolute; bottom:10px; right:10px; z-index:4; display:inline-flex; padding:7px; border-radius:var(--r-sm);
       background:color-mix(in srgb, var(--bg-deep) 55%, transparent); border:1px solid transparent; color:#fff; opacity:0; cursor:pointer; transition:opacity var(--ui-motion-fast); }
     #playerWrap:hover .fs-btn { opacity:.85; }
     .fs-btn:hover { opacity:1; background:color-mix(in srgb, var(--bg-deep) 80%, transparent); }
