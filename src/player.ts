@@ -80,4 +80,5 @@ export class Player {
   seekBy(d: number) { if (this.yt?.getCurrentTime) this.seekTo((this.yt.getCurrentTime() || 0) + d); }
   setRate(r: number) { this.yt?.setPlaybackRate?.(r); }
   getRate(): number { return this.yt?.getPlaybackRate?.() ?? 1; }
+  toggleMute() { if (this.yt?.isMuted?.()) this.yt.unMute(); else this.yt?.mute(); }
 }
