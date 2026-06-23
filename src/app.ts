@@ -381,7 +381,8 @@ export class App extends LitElement {
                 @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
               <div class="meta">
                 <div class="t" title=${v.title || v.id}>${v.title || v.id}</div>
-                <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}</div>
+                <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}${this.recMap()[v.id] ? html` · <span class="tx">transcript</span>` : nothing}</div>
+                ${v.tags.length ? html`<div class="ctags">${v.tags.map((t) => html`<span class="ctag">${t}</span>`)}</div>` : nothing}
               </div>
               <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
             </div>`) : html`<div class="empty-lib">${this.videos.length ? "No videos match this tag." : "No videos yet — load one to start."}</div>`}
@@ -593,6 +594,9 @@ export class App extends LitElement {
     .libcard .meta { min-width:0; flex:1; }
     .libcard .t { font-size:12.5px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .libcard .c { font-size:11px; color:var(--fg-faded); margin-top:1px; }
+    .libcard .tx { color:var(--accent); }
+    .ctags { display:flex; flex-wrap:wrap; gap:3px; margin-top:3px; }
+    .ctag { font-size:9.5px; padding:1px 6px; border-radius:999px; background:var(--bg-deep); color:var(--fg-muted); }
     .libcard .rm { opacity:0; position:absolute; top:5px; right:5px; padding:3px; }
     .libcard:hover .rm { opacity:.65; } .libcard .rm:hover { opacity:1; }
     .empty-lib { color:var(--fg-faded); font-size:12px; padding:6px 16px; }
