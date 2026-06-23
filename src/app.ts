@@ -102,6 +102,7 @@ export class App extends LitElement {
 
   private onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
     if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen) return;
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
@@ -913,6 +914,7 @@ export class App extends LitElement {
       ["← / →", "Back / forward 5s  (Shift = 30s)"],
       ["+ / −", "Playback speed up / down"],
       ["M / F", "Mute / fullscreen"],
+      ["Ctrl+B", "Toggle sidebar"],
       ["0–9", "Seek to 0–90%"],
       ["↑ / ↓", "Select previous / next note"],
       ["Enter / Delete", "Edit / delete selected note"],
@@ -983,7 +985,7 @@ export class App extends LitElement {
     .libcard .lc-actions .ghost:hover { opacity:1; }
     .libcard .rm:hover { color:var(--err); }
     .libcard .pin.on { opacity:.95; color:var(--accent); }
-    .lc-check { position:absolute; top:5px; left:5px; width:15px; height:15px; opacity:0; z-index:1; }
+    .lc-check { flex:0 0 auto; width:15px; height:15px; cursor:pointer; opacity:0; transition:opacity var(--ui-motion-fast); }
     .libcard:hover .lc-check, .libcard.sel .lc-check { opacity:1; }
     .libcard.sel { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
     .bulkbar { display:flex; align-items:center; gap:6px; padding:7px 10px; margin:4px 8px; background:var(--bg-elevated); border:1px solid var(--accent); border-radius:var(--r-sm); font-size:12px; }
@@ -1066,7 +1068,7 @@ export class App extends LitElement {
     .np-link:hover { color:var(--accent); }
     #playerWrap { position:relative; background:#000; border:1px solid var(--border-subtle); border-radius:var(--r); overflow:hidden; aspect-ratio:16/9; width:100%; max-width:calc(68vh * 16 / 9); align-self:center; flex:0 0 auto; box-shadow:0 10px 34px rgba(0,0,0,.45); }
     #player { width:100%; height:100%; }
-    .fs-btn { position:absolute; top:10px; right:10px; z-index:4; display:inline-flex; padding:7px; border-radius:var(--r-sm);
+    .fs-btn { position:absolute; bottom:10px; left:10px; z-index:4; display:inline-flex; padding:7px; border-radius:var(--r-sm);
       background:color-mix(in srgb, var(--bg-deep) 55%, transparent); border:1px solid transparent; color:#fff; opacity:0; cursor:pointer; transition:opacity var(--ui-motion-fast); }
     #playerWrap:hover .fs-btn { opacity:.85; }
     .fs-btn:hover { opacity:1; background:color-mix(in srgb, var(--bg-deep) 80%, transparent); }
