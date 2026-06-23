@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 export interface VideoWithCount {
   id: string; title: string; channel: string | null; url: string;
   duration: number | null; last_pos_secs: number; manual_order: boolean; note_count: number; tags: string[];
-  ext_ref: string | null;
+  ext_ref: string | null; pinned: boolean;
 }
 export interface Video {
   id: string; title: string; channel: string | null; url: string;
@@ -24,6 +24,7 @@ export const api = {
   upsertVideo: (id: string, url: string) => invoke<Video>("upsert_video", { id, url }),
   setVideoTitle: (id: string, title: string) => invoke<void>("set_video_title", { id, title }),
   setLastPos: (id: string, secs: number) => invoke<void>("set_last_pos", { id, secs }),
+  setPinned: (id: string, pinned: boolean) => invoke<void>("set_pinned", { id, pinned }),
   setVideoTags: (id: string, tags: string[]) => invoke<void>("set_video_tags", { id, tags }),
   setExtRef: (id: string, extRef: string | null) => invoke<void>("set_ext_ref", { id, extRef }),
   deleteVideo: (id: string) => invoke<void>("delete_video", { id }),

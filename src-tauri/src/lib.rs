@@ -31,6 +31,11 @@ async fn set_last_pos(db: State<'_, Db>, id: String, secs: f64) -> Result<(), St
 }
 
 #[tauri::command]
+async fn set_pinned(db: State<'_, Db>, id: String, pinned: bool) -> Result<(), String> {
+    db.set_pinned(&id, pinned).await.map_err(err)
+}
+
+#[tauri::command]
 async fn set_video_tags(db: State<'_, Db>, id: String, tags: Vec<String>) -> Result<(), String> {
     db.set_tags(&id, &tags).await.map_err(err)
 }
@@ -291,6 +296,8 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("resolve app data dir");
             std::fs::create_dir_all(&dir).ok();
@@ -317,6 +324,7 @@ pub fn run() {
             upsert_video,
             set_video_title,
             set_last_pos,
+            set_pinned,
             set_video_tags,
             set_ext_ref,
             delete_video,

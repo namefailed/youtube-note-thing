@@ -23,6 +23,7 @@ pub struct VideoWithCount {
     pub note_count: i64,
     pub tags: Json<Vec<String>>,
     pub ext_ref: Option<String>,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -87,7 +88,7 @@ pub struct Backup {
 impl Db {
     pub async fn list_videos(&self) -> Result<Vec<VideoWithCount>, sqlx::Error> {
         sqlx::query_as::<_, VideoWithCount>(
-            "SELECT v.id, v.title, v.channel, v.url, v.duration, v.last_pos_secs, v.manual_order, v.tags, v.ext_ref,
+            "SELECT v.id, v.title, v.channel, v.url, v.duration, v.last_pos_secs, v.manual_order, v.tags, v.ext_ref, v.pinned,
                     (SELECT COUNT(*) FROM notes n WHERE n.video_id = v.id) AS note_count
              FROM videos v ORDER BY v.added_at DESC",
         )
@@ -131,6 +132,15 @@ impl Db {
     pub async fn set_video_title(&self, id: &str, title: &str) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE videos SET title = ? WHERE id = ?")
             .bind(title)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE videos SET pinned = ? WHERE id = ?")
+            .bind(pinned)
             .bind(id)
             .execute(&self.pool)
             .await?;

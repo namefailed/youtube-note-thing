@@ -7,6 +7,8 @@ import { parseVideoId, formatTime, applyOffset, notesToMarkdown, tsLink } from "
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check } from "@tauri-apps/plugin-updater";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 
 // Lazy + guarded: outside the Tauri runtime (e.g. a browser preview) this is
 // absent, and the app must still render rather than fail to define the element.
@@ -32,6 +34,8 @@ const I = {
   menu: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 6h16M4 12h16M4 18h16"/></svg>`,
   chev: svg`<svg viewBox="0 0 24 24" class="i"><path d="M9 6l6 6-6 6"/></svg>`,
   caret: svg`<svg viewBox="0 0 24 24" class="i"><path d="M6 9l6 6 6-6"/></svg>`,
+  pin: svg`<svg viewBox="0 0 24 24" class="i"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6zM12 16v5"/></svg>`,
+  replace: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -73,6 +77,9 @@ export class App extends LitElement {
   @state() private libView: "all" | "transcript" = "all";
   @state() private folds: Record<string, boolean> = {};
   @state() private cheatOpen = false;
+  @state() private findReplaceOpen = false;
+  @state() private sortDesc = true;
+  @state() private selected = new Set<string>();
   @state() private phonemeOk = false;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private rate = 1;
@@ -86,9 +93,9 @@ export class App extends LitElement {
   private settings: Settings = loadSettings();
 
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen)) { this.cheatOpen = false; this.closeModal(); return; }
+    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
-    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen) return;
+    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen) return;
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
     if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
@@ -376,6 +383,37 @@ export class App extends LitElement {
   }
   private setSpeed(r: number) { this.player?.setRate(r); this.rate = r; this.flash(`Speed ${r}×`); }
   private closeMenu(e: Event) { (e.target as HTMLElement).closest("details")?.removeAttribute("open"); }
+  private async togglePin(id: string, pinned: boolean) { await api.setPinned(id, !pinned); await this.refreshVideos(); }
+  private async browseVault() {
+    try { const dir = await openDialog({ directory: true }); if (typeof dir === "string") this.setSetting("vaultDir", dir); }
+    catch (e) { this.flash(String(e), "err"); }
+  }
+  private async openVault() {
+    if (!this.settings.vaultDir) return;
+    try { await openPath(this.settings.vaultDir); } catch (e) { this.flash(String(e), "err"); }
+  }
+  private async runReplace(find: string, repl: string) {
+    if (!find || !this.currentId) return;
+    let n = 0;
+    for (const note of this.notes) {
+      if (note.content.includes(find)) { await api.updateNote(note.id, note.content.split(find).join(repl)); n++; }
+    }
+    await this.refreshNotes();
+    this.findReplaceOpen = false;
+    this.flash(n ? `Replaced in ${n} note${n > 1 ? "s" : ""}` : "No matches", n ? "ok" : "info");
+  }
+  private toggleSelect(id: string) {
+    const s = new Set(this.selected);
+    if (s.has(id)) s.delete(id); else s.add(id);
+    this.selected = s;
+  }
+  private async bulkDelete() {
+    const ids = [...this.selected];
+    for (const id of ids) { if (id === this.currentId) this.deselect(); await api.deleteVideo(id); }
+    this.selected = new Set();
+    await this.refreshVideos();
+    this.flash(`Deleted ${ids.length} video${ids.length > 1 ? "s" : ""}`, "ok");
+  }
   private onPlayerError(code: number) {
     const msg: Record<number, string> = {
       2: "Invalid video URL", 5: "Playback error", 100: "Video not found or removed",
@@ -440,7 +478,10 @@ export class App extends LitElement {
     const transcriptCount = this.videos.filter((v) => v.ext_ref).length;
     let vids = this.libView === "transcript" ? this.videos.filter((v) => v.ext_ref) : this.videos;
     if (this.tagFilter) vids = vids.filter((v) => v.tags.includes(this.tagFilter!));
-    const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen;
+    vids = [...vids];
+    if (!this.sortDesc) vids.reverse();          // list arrives newest-first; reverse → oldest-first
+    vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
+    const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen;
     return html`
       <header class="titlebar" data-tauri-drag-region ?inert=${trapped}>
         <div class="tb-left" data-tauri-drag-region>
@@ -456,9 +497,12 @@ export class App extends LitElement {
 
       <aside ?inert=${trapped}>
         <div class="section">
-          <button class="sec-head" @click=${() => this.toggleFold("lib")}>
-            <span class="chev ${this.folds.lib ? "" : "open"}">${I.chev}</span> Library
-          </button>
+          <div class="sec-head-row">
+            <button class="sec-head" @click=${() => this.toggleFold("lib")}>
+              <span class="chev ${this.folds.lib ? "" : "open"}">${I.chev}</span> Library
+            </button>
+            <button class="sort-btn" title="Toggle sort order" @click=${() => (this.sortDesc = !this.sortDesc)}>${this.sortDesc ? "Newest" : "Oldest"}</button>
+          </div>
           ${!this.folds.lib ? html`
             <button class="sidebar-item ${this.libView === "all" && !this.tagFilter ? "on" : ""}"
               @click=${() => { this.libView = "all"; this.tagFilter = null; }}>
@@ -480,18 +524,29 @@ export class App extends LitElement {
               <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
             </button>`) : nothing}
         </div>` : nothing}
+        ${this.selected.size ? html`<div class="bulkbar">
+          <span>${this.selected.size} selected</span>
+          <span class="grow"></span>
+          <button class="danger" @click=${() => this.bulkDelete()}>Delete</button>
+          <button class="ghost" @click=${() => (this.selected = new Set())}>Clear</button>
+        </div>` : nothing}
         <div class="lib">
           ${vids.length ? vids.map((v) => html`
-            <div class="libcard ${v.id === this.currentId ? "active" : ""}" @click=${() => this.toggleVideo(v.id, v.url)}>
+            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""}" @click=${() => this.toggleVideo(v.id, v.url)}>
+              <input class="lc-check" type="checkbox" title="Select" .checked=${this.selected.has(v.id)}
+                @click=${(e: Event) => e.stopPropagation()} @change=${() => this.toggleSelect(v.id)} />
               <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                 @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
               <div class="meta">
                 <div class="t" title=${v.title || v.id}>${v.title || v.id}</div>
-                <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}${v.ext_ref ? html` · <span class="tx">transcript</span>` : nothing}</div>
+                <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}${v.ext_ref ? html` · <span class="pill tx">transcript</span>` : nothing}</div>
                 ${v.tags.length ? html`<div class="ctags">${v.tags.map((t) => html`<span class="ctag">${t}</span>`)}</div>` : nothing}
               </div>
-              <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
-            </div>`) : html`<div class="empty-lib">${this.videos.length ? "No videos match this tag." : "No videos yet — load one to start."}</div>`}
+              <div class="lc-actions">
+                <button class="ghost pin ${v.pinned ? "on" : ""}" title=${v.pinned ? "Unpin" : "Pin to top"} @click=${(e: Event) => { e.stopPropagation(); this.togglePin(v.id, v.pinned); }}>${I.pin}</button>
+                <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
+              </div>
+            </div>`) : html`<div class="empty-lib">${this.videos.length ? "No videos match this filter." : "No videos yet — load one to start."}</div>`}
         </div>
       </aside>
 
@@ -539,6 +594,7 @@ export class App extends LitElement {
             <input type="text" placeholder="Filter notes…" .value=${this.filter}
               @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)} />
             ${this.current?.manual_order ? html`<button @click=${() => this.resetOrder()}>By time</button>` : nothing}
+            <button class="ghost" title="Find & replace in notes" aria-label="Find and replace" ?disabled=${!this.notes.length} @click=${() => (this.findReplaceOpen = true)}>${I.replace}</button>
             ${this.notes.length ? html`<details class="menu">
               <summary class="ghost" title="Export notes">${I.download} Export ${I.caret}</summary>
               <div class="menu-pop">
@@ -572,6 +628,7 @@ export class App extends LitElement {
       ${this.searchOpen ? this.renderSearch() : nothing}
       ${this.settingsOpen ? this.renderSettings() : nothing}
       ${this.cheatOpen ? this.renderCheat() : nothing}
+      ${this.findReplaceOpen ? this.renderFindReplace() : nothing}
       ${this.toasts.length ? html`<div class="toasts" role="status" aria-live="polite">
         ${this.toasts.map((t) => html`<div class="toast ${t.kind}">${t.msg}</div>`)}
       </div>` : nothing}
@@ -662,9 +719,13 @@ export class App extends LitElement {
         </section>
         <section class="settings-section">
           <h3>Storage &amp; backup</h3>
-          <label class="field col"><span>Vault folder</span>
-            <input type="text" placeholder="C:\\Users\\you\\Vault" .value=${this.settings.vaultDir}
-              @input=${(e: Event) => this.setSetting("vaultDir", (e.target as HTMLInputElement).value)} /></label>
+          <div class="field col"><span>Vault folder</span>
+            <div class="row2">
+              <input class="grow" type="text" placeholder="C:\\Users\\you\\Vault" .value=${this.settings.vaultDir}
+                @input=${(e: Event) => this.setSetting("vaultDir", (e.target as HTMLInputElement).value)} />
+              <button @click=${() => this.browseVault()}>Browse…</button>
+              <button ?disabled=${!this.settings.vaultDir} @click=${() => this.openVault()}>Open</button>
+            </div></div>
           <div class="help muted sm">Where “Save to vault” writes Markdown — e.g. an Obsidian vault.</div>
           <div class="field col"><span>Library backup</span>
             <div class="row2">
@@ -704,6 +765,23 @@ export class App extends LitElement {
           ? "Phoneme gives a cleaned, reliable transcript. YouTube captions are a quick best-effort fallback."
           : "Phoneme not detected — captions are best-effort and many videos have none. Install Phoneme for reliable transcripts."}</div>
     </div></div>`;
+  }
+
+  private renderFindReplace() {
+    return html`<div class="overlay" @click=${() => (this.findReplaceOpen = false)} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+      <div class="panel" role="dialog" aria-modal="true" aria-label="Find and replace" @click=${(e: Event) => e.stopPropagation()}>
+        <div class="panel-head"><span>Find &amp; replace in notes</span>
+          <button class="ghost" title="Close" @click=${() => (this.findReplaceOpen = false)}>${I.close}</button></div>
+        <label class="field col"><span>Find</span><input id="fr-find" type="text" placeholder="text to find" /></label>
+        <label class="field col"><span>Replace with</span><input id="fr-repl" type="text" placeholder="replacement (blank to delete)" /></label>
+        <div class="row2"><span class="grow"></span>
+          <button class="primary" @click=${() => this.runReplace(
+            (this.renderRoot.querySelector("#fr-find") as HTMLInputElement)?.value || "",
+            (this.renderRoot.querySelector("#fr-repl") as HTMLInputElement)?.value || "",
+          )}>Replace all</button></div>
+        <div class="muted sm">Literal replace across this video’s notes.</div>
+      </div>
+    </div>`;
   }
 
   private renderCheat() {
@@ -778,12 +856,27 @@ export class App extends LitElement {
     .libcard .tx { color:var(--accent); }
     .ctags { display:flex; flex-wrap:wrap; gap:3px; margin-top:3px; }
     .ctag { font-size:9.5px; padding:1px 6px; border-radius:999px; background:var(--bg-deep); color:var(--fg-muted); }
-    .libcard .rm { opacity:0; position:absolute; top:5px; right:5px; padding:3px; }
-    .libcard:hover .rm { opacity:.65; } .libcard .rm:hover { opacity:1; }
+    .lc-actions { position:absolute; top:4px; right:4px; display:flex; gap:1px; }
+    .libcard .lc-actions .ghost { padding:3px; opacity:0; }
+    .libcard:hover .lc-actions .ghost { opacity:.6; }
+    .libcard .lc-actions .ghost:hover { opacity:1; }
+    .libcard .rm:hover { color:var(--err); }
+    .libcard .pin.on { opacity:.95; color:var(--accent); }
+    .lc-check { position:absolute; top:5px; left:5px; width:15px; height:15px; opacity:0; z-index:1; }
+    .libcard:hover .lc-check, .libcard.sel .lc-check { opacity:1; }
+    .libcard.sel { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
+    .bulkbar { display:flex; align-items:center; gap:6px; padding:7px 10px; margin:4px 8px; background:var(--bg-elevated); border:1px solid var(--accent); border-radius:var(--r-sm); font-size:12px; }
+    .danger { background:var(--err); color:var(--bg-deep); border-color:var(--err); }
+    .danger:hover { background:color-mix(in srgb, var(--err), black 12%); border-color:color-mix(in srgb, var(--err), black 12%); }
+    .pill { padding:1px 7px; border-radius:999px; background:var(--tint); color:var(--accent); font-size:9.5px; }
     .empty-lib { color:var(--fg-faded); font-size:12px; padding:6px 16px; }
     .section { border-bottom:1px solid var(--border-subtle); padding:2px 8px 6px; }
     .sec-head { width:100%; display:flex; align-items:center; gap:6px; background:none; border:none; padding:8px 8px 4px; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); cursor:pointer; }
     .sec-head:hover { background:none; color:var(--fg-muted); }
+    .sec-head-row { display:flex; align-items:center; }
+    .sec-head-row .sec-head { flex:1; }
+    .sort-btn { background:none; border:none; color:var(--fg-faded); font-size:10px; text-transform:uppercase; letter-spacing:.06em; cursor:pointer; padding:8px 8px 4px; white-space:nowrap; }
+    .sort-btn:hover { color:var(--accent); background:none; }
     .chev { display:inline-flex; transition:transform var(--ui-motion-fast); }
     .chev .i { width:13px; height:13px; }
     .chev.open { transform:rotate(90deg); }
