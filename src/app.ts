@@ -1,7 +1,7 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit } from "./api";
+import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit, type GPlaylist } from "./api";
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
@@ -39,6 +39,7 @@ const I = {
   expand: svg`<svg viewBox="0 0 24 24" class="i"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg>`,
   film: svg`<svg viewBox="0 0 24 24" class="i"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16M16 4v16"/></svg>`,
   captions: svg`<svg viewBox="0 0 24 24" class="i"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11h3M7 14h6M14 11h3"/></svg>`,
+  list: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 6h11M4 12h11M4 18h7M17 13l4 2-4 2z"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -58,7 +59,7 @@ function themeLabel(slug: string): string {
   return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
-interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; }
+interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; }
 type Editing = { id?: string; t: number; draft: string } | null;
 
 @customElement("ytnt-app")
@@ -85,6 +86,8 @@ export class App extends LitElement {
   @state() private selected = new Set<string>();
   @state() private fsNote: { t: number } | null = null;
   @state() private titleEditing = false;
+  @state() private googleConnected = false;
+  @state() private gplaylists: GPlaylist[] = [];
   @state() private phonemeOk = false;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private rate = 1;
@@ -158,6 +161,35 @@ export class App extends LitElement {
     this.player.onError = (code) => this.onPlayerError(code);
     api.phonemeAvailable().then((ok) => (this.phonemeOk = ok)).catch(() => {});
     win()?.setDecorations(!this.settings.stripTitlebar)?.catch(() => {});
+    api.googleStatus().then((ok) => { this.googleConnected = ok; if (ok) this.loadGPlaylists(); }).catch(() => {});
+  }
+  private async googleConnect() {
+    const { gClientId, gClientSecret } = this.settings;
+    if (!gClientId || !gClientSecret) { this.flash("Enter your Google client ID and secret first", "err"); return; }
+    this.flash("Opening Google sign-in — authorize in your browser…");
+    try {
+      await api.googleConnect(gClientId, gClientSecret);
+      this.googleConnected = true;
+      this.flash("YouTube account connected", "ok");
+      this.loadGPlaylists();
+    } catch (e) { this.flash(String(e), "err"); }
+  }
+  private async googleDisconnect() {
+    await api.googleLogout();
+    this.googleConnected = false; this.gplaylists = [];
+    this.flash("Disconnected", "ok");
+  }
+  private async loadGPlaylists() {
+    try { this.gplaylists = await api.googlePlaylists(this.settings.gClientId, this.settings.gClientSecret); }
+    catch (e) { this.flash(String(e), "err"); }
+  }
+  private async importGPlaylist(p: GPlaylist) {
+    this.flash(`Importing “${p.title}”…`);
+    try {
+      const n = await api.importGooglePlaylist(this.settings.gClientId, this.settings.gClientSecret, p.id);
+      await this.refreshVideos();
+      this.flash(n ? `Imported ${n} from “${p.title}”` : `“${p.title}” already in your library`, "ok");
+    } catch (e) { this.flash(String(e), "err"); }
   }
 
   private get current() { return this.videos.find((v) => v.id === this.currentId) ?? null; }
@@ -562,6 +594,15 @@ export class App extends LitElement {
               <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
             </button>`) : nothing}
         </div>` : nothing}
+        ${this.googleConnected && this.gplaylists.length ? html`<div class="section">
+          <button class="sec-head" @click=${() => this.toggleFold("pl")}>
+            <span class="chev ${this.folds.pl ? "" : "open"}">${I.chev}</span> Playlists
+          </button>
+          ${!this.folds.pl ? this.gplaylists.map((p) => html`
+            <button class="sidebar-item" title=${`Import “${p.title}” (${p.count})`} @click=${() => this.importGPlaylist(p)}>
+              <span class="si-icon">${I.list}</span><span class="si-label">${p.title}</span><span class="count">${p.count}</span>
+            </button>`) : nothing}
+        </div>` : nothing}
         ${this.selected.size ? html`<div class="bulkbar">
           <span>${this.selected.size} selected</span>
           <input class="bulk-tag" type="text" placeholder="+ tag…" title="Add a tag to selected"
@@ -795,6 +836,24 @@ export class App extends LitElement {
               <label class="btn grow" style="justify-content:center">Import JSON
                 <input type="file" accept="application/json" hidden @change=${(e: Event) => this.importJson(e)} /></label>
             </div></div>
+        </section>
+        <section class="settings-section">
+          <h3>YouTube account</h3>
+          ${this.googleConnected ? html`
+            <div class="field"><span>Connected</span>
+              <button class="danger" @click=${() => this.googleDisconnect()}>Disconnect</button></div>
+            <div class="help muted sm">Your playlists show in the sidebar — click one to import its videos. Watch Later &amp; History aren’t available through YouTube’s API.</div>
+          ` : html`
+            <label class="field col"><span>Google client ID</span>
+              <input type="text" placeholder="xxxxx.apps.googleusercontent.com" .value=${this.settings.gClientId}
+                @input=${(e: Event) => this.setSetting("gClientId", (e.target as HTMLInputElement).value)} /></label>
+            <label class="field col"><span>Client secret</span>
+              <input type="password" placeholder="GOCSPX-…" .value=${this.settings.gClientSecret}
+                @input=${(e: Event) => this.setSetting("gClientSecret", (e.target as HTMLInputElement).value)} /></label>
+            <div class="field"><span>Link account</span>
+              <button class="primary" @click=${() => this.googleConnect()}>Connect YouTube</button></div>
+            <div class="help muted sm">Create a Google Cloud OAuth <b>Desktop app</b> client, enable the <b>YouTube Data API v3</b>, then paste its ID + secret here. Sign-in opens in your browser. Watch Later/History can’t be read via the API.</div>
+          `}
         </section>
         <section class="settings-section">
           <h3>Updates</h3>
@@ -1104,7 +1163,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "" };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }

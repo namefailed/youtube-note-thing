@@ -4,7 +4,9 @@
 mod db;
 
 use db::{Backup, Db, Note, SearchHit, VideoWithCount};
-use tauri::{Manager, State};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use tauri::{AppHandle, Manager, State};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
@@ -351,6 +353,246 @@ async fn import_youtube_playlist(db: State<'_, Db>, playlist_id: String) -> Resu
     db.import_playlist(&vids).await.map_err(err)
 }
 
+// ── Optional Google / YouTube account link (OAuth 2.0 installed-app flow) ──────
+// The user supplies their own Google Cloud OAuth "Desktop app" client (id+secret)
+// with the YouTube Data API enabled — see the in-app Settings help. We run the
+// standard loopback flow: bind 127.0.0.1:<random>, open the consent page, capture
+// the code, exchange it for tokens, and persist them in the app data dir. Watch
+// Later / History are NOT exposed by the API; only real playlists are.
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct GoogleTokens {
+    access_token: String,
+    refresh_token: String,
+    expires_at: i64,
+}
+
+#[derive(serde::Serialize)]
+struct GPlaylist {
+    id: String,
+    title: String,
+    count: i64,
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+fn tokens_path(app: &AppHandle) -> std::path::PathBuf {
+    let dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    dir.join("google_tokens.json")
+}
+fn load_tokens(app: &AppHandle) -> Option<GoogleTokens> {
+    std::fs::read_to_string(tokens_path(app)).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
+fn save_tokens(app: &AppHandle, t: &GoogleTokens) -> Result<(), String> {
+    let p = tokens_path(app);
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d).ok();
+    }
+    std::fs::write(p, serde_json::to_string(t).map_err(err)?).map_err(err)
+}
+
+/// Block until the OAuth redirect hits our loopback listener, then return the code.
+fn wait_for_code(listener: TcpListener) -> Result<String, String> {
+    let (mut stream, _) = listener.accept().map_err(err)?;
+    let mut buf = [0u8; 4096];
+    let n = stream.read(&mut buf).map_err(err)?;
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let path = req.lines().next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("");
+    let body = "<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;background:#11111b;color:#cdd6f4;text-align:center;padding-top:64px\"><h2 style=\"color:#a6e3a1\">Connected \u{2713}</h2><p>You can close this tab and return to youtube-note-thing.</p>";
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(), body
+    );
+    let _ = stream.write_all(resp.as_bytes());
+    let full = format!("http://localhost{path}");
+    let parsed = url::Url::parse(&full).map_err(err)?;
+    parsed
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .ok_or_else(|| "No authorization code in the redirect (consent denied?)".into())
+}
+
+async fn exchange_code(cid: &str, secret: &str, code: &str, redirect: &str) -> Result<GoogleTokens, String> {
+    let res: serde_json::Value = reqwest::Client::new()
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("code", code),
+            ("client_id", cid),
+            ("client_secret", secret),
+            ("redirect_uri", redirect),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await
+        .map_err(err)?
+        .json()
+        .await
+        .map_err(err)?;
+    let access = res.get("access_token").and_then(|x| x.as_str())
+        .ok_or_else(|| format!("Token exchange failed: {}", res.get("error_description").or_else(|| res.get("error")).and_then(|x| x.as_str()).unwrap_or("unknown")))?
+        .to_string();
+    let refresh = res.get("refresh_token").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let expires_in = res.get("expires_in").and_then(|x| x.as_i64()).unwrap_or(3600);
+    Ok(GoogleTokens { access_token: access, refresh_token: refresh, expires_at: now_secs() + expires_in })
+}
+
+/// A non-expired access token, refreshing via the stored refresh token if needed.
+async fn valid_access_token(app: &AppHandle, cid: &str, secret: &str) -> Result<String, String> {
+    let mut t = load_tokens(app).ok_or("Not connected to a Google account")?;
+    if t.expires_at > now_secs() + 60 && !t.access_token.is_empty() {
+        return Ok(t.access_token);
+    }
+    if t.refresh_token.is_empty() {
+        return Err("Session expired — reconnect your Google account".into());
+    }
+    let res: serde_json::Value = reqwest::Client::new()
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", cid),
+            ("client_secret", secret),
+            ("refresh_token", t.refresh_token.as_str()),
+            ("grant_type", "refresh_token"),
+        ])
+        .send()
+        .await
+        .map_err(err)?
+        .json()
+        .await
+        .map_err(err)?;
+    let access = res.get("access_token").and_then(|x| x.as_str())
+        .ok_or("Token refresh failed — reconnect your Google account")?
+        .to_string();
+    let expires_in = res.get("expires_in").and_then(|x| x.as_i64()).unwrap_or(3600);
+    t.access_token = access.clone();
+    t.expires_at = now_secs() + expires_in;
+    save_tokens(app, &t)?;
+    Ok(access)
+}
+
+#[tauri::command]
+fn google_status(app: AppHandle) -> bool {
+    load_tokens(&app).map(|t| !t.refresh_token.is_empty()).unwrap_or(false)
+}
+
+#[tauri::command]
+fn google_logout(app: AppHandle) -> Result<(), String> {
+    let p = tokens_path(&app);
+    if p.exists() {
+        std::fs::remove_file(p).map_err(err)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn google_connect(app: AppHandle, client_id: String, client_secret: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(err)?;
+    let port = listener.local_addr().map_err(err)?.port();
+    let redirect = format!("http://127.0.0.1:{port}");
+    let mut auth = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").map_err(err)?;
+    auth.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("access_type", "offline")
+        .append_pair("prompt", "consent")
+        .append_pair("client_id", &client_id)
+        .append_pair("redirect_uri", &redirect)
+        .append_pair("scope", "https://www.googleapis.com/auth/youtube.readonly");
+    app.opener().open_url(auth.to_string(), None::<&str>).map_err(err)?;
+    let code = tauri::async_runtime::spawn_blocking(move || wait_for_code(listener))
+        .await
+        .map_err(err)??;
+    let tokens = exchange_code(&client_id, &client_secret, &code, &redirect).await?;
+    if tokens.refresh_token.is_empty() {
+        return Err("Google did not return a refresh token. Remove this app from your Google account's third-party access and try again.".into());
+    }
+    save_tokens(&app, &tokens)
+}
+
+#[tauri::command]
+async fn google_playlists(app: AppHandle, client_id: String, client_secret: String) -> Result<Vec<GPlaylist>, String> {
+    let token = valid_access_token(&app, &client_id, &client_secret).await?;
+    let res: serde_json::Value = reqwest::Client::new()
+        .get("https://www.googleapis.com/youtube/v3/playlists")
+        .query(&[("part", "snippet,contentDetails"), ("mine", "true"), ("maxResults", "50")])
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(err)?
+        .json()
+        .await
+        .map_err(err)?;
+    let mut out = Vec::new();
+    if let Some(items) = res.get("items").and_then(|x| x.as_array()) {
+        for it in items {
+            let id = it.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if id.is_empty() {
+                continue;
+            }
+            out.push(GPlaylist {
+                id,
+                title: it.pointer("/snippet/title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                count: it.pointer("/contentDetails/itemCount").and_then(|x| x.as_i64()).unwrap_or(0),
+            });
+        }
+    } else if let Some(e) = res.pointer("/error/message").and_then(|x| x.as_str()) {
+        return Err(e.to_string());
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn import_google_playlist(
+    app: AppHandle,
+    db: State<'_, Db>,
+    client_id: String,
+    client_secret: String,
+    playlist_id: String,
+) -> Result<usize, String> {
+    let token = valid_access_token(&app, &client_id, &client_secret).await?;
+    let client = reqwest::Client::new();
+    let mut vids: Vec<(String, String)> = Vec::new();
+    let mut page = String::new();
+    loop {
+        let mut q = vec![
+            ("part", "snippet"),
+            ("playlistId", playlist_id.as_str()),
+            ("maxResults", "50"),
+        ];
+        if !page.is_empty() {
+            q.push(("pageToken", page.as_str()));
+        }
+        let res: serde_json::Value = client
+            .get("https://www.googleapis.com/youtube/v3/playlistItems")
+            .query(&q)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(err)?
+            .json()
+            .await
+            .map_err(err)?;
+        if let Some(items) = res.get("items").and_then(|x| x.as_array()) {
+            for it in items {
+                let vid = it.pointer("/snippet/resourceId/videoId").and_then(|x| x.as_str()).unwrap_or("");
+                if !vid.is_empty() {
+                    let title = it.pointer("/snippet/title").and_then(|x| x.as_str()).unwrap_or("");
+                    vids.push((vid.to_string(), title.to_string()));
+                }
+            }
+        }
+        match res.get("nextPageToken").and_then(|x| x.as_str()) {
+            Some(t) => page = t.to_string(),
+            None => break,
+        }
+    }
+    db.import_playlist(&vids).await.map_err(err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -403,6 +645,11 @@ pub fn run() {
             phoneme_search,
             youtube_captions,
             import_youtube_playlist,
+            google_status,
+            google_logout,
+            google_connect,
+            google_playlists,
+            import_google_playlist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

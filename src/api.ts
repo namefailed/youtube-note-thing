@@ -17,6 +17,7 @@ export interface SearchHit {
 }
 export interface Segment { start_ms: number; end_ms: number; text: string; speaker: string | null; }
 export interface PhonemeHit { id: string; title: string; snippet: string; }
+export interface GPlaylist { id: string; title: string; count: number; }
 
 // Tauri maps camelCase JS keys to snake_case Rust params automatically.
 export const api = {
@@ -49,4 +50,12 @@ export const api = {
     invoke<Segment[]>("youtube_captions", { videoId, lang: lang ?? null }),
   importYoutubePlaylist: (playlistId: string) =>
     invoke<number>("import_youtube_playlist", { playlistId }),
+  googleStatus: () => invoke<boolean>("google_status"),
+  googleConnect: (clientId: string, clientSecret: string) =>
+    invoke<void>("google_connect", { clientId, clientSecret }),
+  googleLogout: () => invoke<void>("google_logout"),
+  googlePlaylists: (clientId: string, clientSecret: string) =>
+    invoke<GPlaylist[]>("google_playlists", { clientId, clientSecret }),
+  importGooglePlaylist: (clientId: string, clientSecret: string, playlistId: string) =>
+    invoke<number>("import_google_playlist", { clientId, clientSecret, playlistId }),
 };
