@@ -969,7 +969,7 @@ export class App extends LitElement {
     input[type=number] { width:60px; text-align:center; }
     input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
 
-    main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; }
+    main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; overflow-y:auto; }
     .topbar { display:flex; gap:8px; align-items:center; }
     .topbar input { flex:1; }
     .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; margin-left:-10px; }
@@ -1036,7 +1036,7 @@ export class App extends LitElement {
     .seg:hover { background:var(--hover); }
     .seg .ts { background:none; padding:0; }
 
-    .notes { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:8px; padding-right:3px; }
+    .notes { display:flex; flex-direction:column; gap:8px; padding-right:3px; }
     .note { display:flex; gap:12px; align-items:flex-start; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--r); padding:12px 14px; transition:border-color .12s, box-shadow .12s; }
     .note:hover { border-color:var(--border); box-shadow:0 2px 14px rgba(0,0,0,.28); }
     .note.selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
@@ -1051,7 +1051,7 @@ export class App extends LitElement {
     .acts { display:flex; gap:2px; opacity:0; transition:opacity .12s; flex:0 0 auto; }
     .note:hover .acts { opacity:1; }
     textarea { width:100%; resize:vertical; min-height:62px; line-height:1.5; }
-    .empty { margin:auto; text-align:center; color:var(--fg-muted); max-width:340px; line-height:1.6; padding:40px; }
+    .empty { min-height:46vh; display:flex; flex-direction:column; align-items:center; justify-content:center; margin-inline:auto; text-align:center; color:var(--fg-muted); max-width:340px; line-height:1.6; padding:40px; }
     .empty h3 { margin:0 0 8px; color:var(--fg-default); font-size:14px; font-weight:600; }
     .empty p { margin:0; color:var(--fg-faded); }
     .empty.src { display:flex; flex-direction:column; gap:10px; align-items:center; }

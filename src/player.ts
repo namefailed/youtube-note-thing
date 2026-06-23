@@ -44,7 +44,9 @@ export class Player {
       this.yt = new window.YT.Player(this.el, {
         videoId,
         playerVars: {
-          enablejsapi: 1, playsinline: 1, rel: 0,
+          // fs:0 hides YouTube's own fullscreen button so ours (which fullscreens
+          // #playerWrap and lets the Alt+N overlay render on top) is the only one.
+          enablejsapi: 1, playsinline: 1, rel: 0, fs: 0,
           origin: location.origin, start: Math.floor(startSeconds),
         },
         events: {
