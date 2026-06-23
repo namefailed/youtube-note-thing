@@ -50,7 +50,7 @@ function themeLabel(slug: string): string {
   return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
-interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; }
+interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; }
 type Editing = { id?: string; t: number; draft: string } | null;
 
 @customElement("ytnt-app")
@@ -142,6 +142,7 @@ export class App extends LitElement {
     this.player.onTitle = (title) => this.onTitle(title);
     this.player.onError = (code) => this.onPlayerError(code);
     api.phonemeAvailable().then((ok) => (this.phonemeOk = ok)).catch(() => {});
+    win()?.setDecorations(!this.settings.stripTitlebar)?.catch(() => {});
   }
 
   private get current() { return this.videos.find((v) => v.id === this.currentId) ?? null; }
@@ -347,6 +348,7 @@ export class App extends LitElement {
     this.settings = { ...this.settings, [k]: v };
     localStorage.setItem("ytnt.settings", JSON.stringify(this.settings));
     if (k === "theme") document.documentElement.dataset.theme = String(v);
+    if (k === "stripTitlebar") win()?.setDecorations(!v)?.catch(() => {});
     this.requestUpdate();
   }
   private flash(m: string) { this.status = m; setTimeout(() => (this.status = ""), 2500); }
@@ -436,11 +438,11 @@ export class App extends LitElement {
           <button class="tb-btn" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
           <span class="tb-title"><span class="dot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span> youtube-note-thing</span>
         </div>
-        <div class="tb-controls">
+        ${this.settings.stripTitlebar ? html`<div class="tb-controls">
           <button class="tb-btn" title="Minimize" @click=${() => win()?.minimize()}>${I.min}</button>
           <button class="tb-btn" title="Maximize" @click=${() => win()?.toggleMaximize()}>${I.max}</button>
           <button class="tb-btn close" title="Close" @click=${() => win()?.close()}>${I.close}</button>
-        </div>
+        </div>` : nothing}
       </header>
 
       <aside ?inert=${trapped}>
@@ -611,33 +613,51 @@ export class App extends LitElement {
       <div class="panel" role="dialog" aria-modal="true" aria-label="Settings" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Settings</span>
           <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
-        <label class="field"><span>Theme</span>
-          <select @change=${(e: Event) => this.setSetting("theme", (e.target as HTMLSelectElement).value)}>
-            <optgroup label="Dark">
-              ${THEMES.filter((t) => !LIGHT_THEMES.has(t)).map((t) => html`<option value=${t} ?selected=${t === this.settings.theme}>${themeLabel(t)}</option>`)}
-            </optgroup>
-            <optgroup label="Light">
-              ${THEMES.filter((t) => LIGHT_THEMES.has(t)).map((t) => html`<option value=${t} ?selected=${t === this.settings.theme}>${themeLabel(t)}</option>`)}
-            </optgroup>
-          </select></label>
-        <label class="field"><span>Auto-pause when adding a note</span>
-          <input type="checkbox" .checked=${this.settings.autopause}
-            @change=${(e: Event) => this.setSetting("autopause", (e.target as HTMLInputElement).checked)} /></label>
-        <label class="field"><span>Capture offset (seconds before keypress)</span>
-          <input type="number" min="0" max="30" .value=${String(this.settings.offset)}
-            @input=${(e: Event) => this.setSetting("offset", Math.max(0, +(e.target as HTMLInputElement).value || 0))} /></label>
-        <label class="field col"><span>Vault folder — for “Save to vault”</span>
-          <input type="text" placeholder="C:\\Users\\you\\Vault" .value=${this.settings.vaultDir}
-            @input=${(e: Event) => this.setSetting("vaultDir", (e.target as HTMLInputElement).value)} /></label>
-        <div class="field col"><span>Library backup</span>
-          <div class="row2">
-            <button class="grow" @click=${() => this.exportJson()}>Export JSON</button>
-            <label class="btn grow" style="justify-content:center">Import JSON
-              <input type="file" accept="application/json" hidden @change=${(e: Event) => this.importJson(e)} /></label>
-          </div></div>
-        <div class="field"><span>Updates</span>
-          <button @click=${() => this.checkUpdates()}>Check for updates</button></div>
-        <div class="hint muted sm">Shortcuts: <b>Alt+N</b> note · <b>Space/K</b> play · <b>J/L</b> ±10s · <b>←/→</b> ±5s · <b>M</b> mute · <b>F</b> fullscreen · <b>0–9</b> seek · <b>↑/↓</b> select note</div>
+        <section class="settings-section">
+          <h3>Appearance</h3>
+          <label class="field"><span>Theme</span>
+            <select @change=${(e: Event) => this.setSetting("theme", (e.target as HTMLSelectElement).value)}>
+              <optgroup label="Dark">
+                ${THEMES.filter((t) => !LIGHT_THEMES.has(t)).map((t) => html`<option value=${t} ?selected=${t === this.settings.theme}>${themeLabel(t)}</option>`)}
+              </optgroup>
+              <optgroup label="Light">
+                ${THEMES.filter((t) => LIGHT_THEMES.has(t)).map((t) => html`<option value=${t} ?selected=${t === this.settings.theme}>${themeLabel(t)}</option>`)}
+              </optgroup>
+            </select></label>
+          <label class="field"><span>Strip system title bar</span>
+            <input type="checkbox" .checked=${this.settings.stripTitlebar}
+              @change=${(e: Event) => this.setSetting("stripTitlebar", (e.target as HTMLInputElement).checked)} /></label>
+          <div class="help muted sm">Hide the OS window frame and use the app’s own chrome. On Windows, turning it back off may need a restart.</div>
+        </section>
+        <section class="settings-section">
+          <h3>Capture</h3>
+          <label class="field"><span>Auto-pause when adding a note</span>
+            <input type="checkbox" .checked=${this.settings.autopause}
+              @change=${(e: Event) => this.setSetting("autopause", (e.target as HTMLInputElement).checked)} /></label>
+          <label class="field"><span>Capture offset (seconds)</span>
+            <input type="number" min="0" max="30" .value=${String(this.settings.offset)}
+              @input=${(e: Event) => this.setSetting("offset", Math.max(0, +(e.target as HTMLInputElement).value || 0))} /></label>
+          <div class="help muted sm">A note’s timestamp lands this many seconds before your keypress, so you don’t miss the moment.</div>
+        </section>
+        <section class="settings-section">
+          <h3>Storage &amp; backup</h3>
+          <label class="field col"><span>Vault folder</span>
+            <input type="text" placeholder="C:\\Users\\you\\Vault" .value=${this.settings.vaultDir}
+              @input=${(e: Event) => this.setSetting("vaultDir", (e.target as HTMLInputElement).value)} /></label>
+          <div class="help muted sm">Where “Save to vault” writes Markdown — e.g. an Obsidian vault.</div>
+          <div class="field col"><span>Library backup</span>
+            <div class="row2">
+              <button class="grow" @click=${() => this.exportJson()}>Export JSON</button>
+              <label class="btn grow" style="justify-content:center">Import JSON
+                <input type="file" accept="application/json" hidden @change=${(e: Event) => this.importJson(e)} /></label>
+            </div></div>
+        </section>
+        <section class="settings-section">
+          <h3>Updates</h3>
+          <div class="field"><span>App updates</span>
+            <button @click=${() => this.checkUpdates()}>Check for updates</button></div>
+        </section>
+        <div class="hint muted sm">Press <b>?</b> for keyboard shortcuts.</div>
       </div>
     </div>`;
   }
@@ -795,7 +815,7 @@ export class App extends LitElement {
     .np-meta { font-size:12px; color:var(--fg-faded); margin-top:1px; }
     .np-link { color:var(--fg-muted); font-size:12px; cursor:pointer; flex:0 0 auto; }
     .np-link:hover { color:var(--accent); }
-    #playerWrap { position:relative; background:#000; border:1px solid var(--border-subtle); border-radius:var(--r); overflow:hidden; aspect-ratio:16/9; max-height:46vh; flex:0 0 auto; box-shadow:0 10px 34px rgba(0,0,0,.45); }
+    #playerWrap { position:relative; background:#000; border:1px solid var(--border-subtle); border-radius:var(--r); overflow:hidden; aspect-ratio:16/9; width:100%; max-width:calc(68vh * 16 / 9); align-self:center; flex:0 0 auto; box-shadow:0 10px 34px rgba(0,0,0,.45); }
     #player { width:100%; height:100%; }
     #timeline { position:relative; height:10px; background:var(--bg-elevated); border-radius:99px; cursor:pointer; flex:0 0 auto; margin:2px 0; }
     #progress { position:absolute; inset:0 100% 0 0; background:linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent), white 22%)); border-radius:99px; }
@@ -844,6 +864,9 @@ export class App extends LitElement {
     .field.col>span { color:var(--fg-faded); }
     .field select, .field.col input { min-width:200px; } .field.col input, .field.col select { width:100%; }
     .row2 { display:flex; gap:8px; }
+    .settings-section { display:flex; flex-direction:column; gap:10px; border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:10px 12px 12px; }
+    .settings-section h3 { margin:0; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--accent); font-weight:700; }
+    .help { color:var(--fg-faded); margin-top:-4px; line-height:1.45; }
     .hint { border-top:1px solid var(--border-subtle); padding-top:10px; line-height:1.7; }
     .hint b { color:var(--fg-default); font-weight:600; }
     .sbar { display:flex; align-items:center; gap:8px; background:var(--bg-deep); border:1px solid var(--border); border-radius:var(--r-sm); padding:0 11px; color:var(--fg-muted); }
@@ -862,7 +885,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha" };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: true };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }
