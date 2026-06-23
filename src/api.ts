@@ -14,6 +14,7 @@ export interface Note {
 export interface SearchHit {
   note_id: string; video_id: string; video_title: string; t_secs: number; content: string;
 }
+export interface Segment { start_ms: number; end_ms: number; text: string; speaker: string | null; }
 
 // Tauri maps camelCase JS keys to snake_case Rust params automatically.
 export const api = {
@@ -36,4 +37,7 @@ export const api = {
   importJson: (json: string) => invoke<void>("import_json", { json }),
   saveMarkdown: (dir: string, name: string, content: string) =>
     invoke<string>("save_markdown", { dir, name, content }),
+  phonemeAvailable: () => invoke<boolean>("phoneme_available"),
+  phonemeImport: (url: string) => invoke<string>("phoneme_import", { url }),
+  phonemeSegments: (id: string) => invoke<Segment[]>("phoneme_segments", { id }),
 };

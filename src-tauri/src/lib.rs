@@ -100,6 +100,71 @@ fn save_markdown(dir: String, name: String, content: String) -> Result<String, S
     Ok(path.to_string_lossy().into_owned())
 }
 
+// ── Optional Phoneme integration (via its CLI, which talks to the daemon) ─────
+// All best-effort: if the `phoneme` CLI isn't on PATH / the daemon is down, these
+// fail and the UI degrades to "Phoneme not detected". We never bundle or require it.
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Segment {
+    #[serde(default)] start_ms: i64,
+    #[serde(default)] end_ms: i64,
+    #[serde(default)] text: String,
+    #[serde(default)] speaker: Option<String>,
+}
+
+fn run_phoneme(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("phoneme")
+        .args(args)
+        .output()
+        .map_err(|e| format!("Phoneme CLI not found ({e})"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Is the Phoneme CLI present and its daemon reachable?
+#[tauri::command]
+fn phoneme_available() -> bool {
+    std::process::Command::new("phoneme")
+        .args(["--json", "list", "--limit", "1"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Hand a YouTube URL to Phoneme (downloads audio + queues transcription).
+/// Blocks until the download finishes, so it runs off the async pool. Returns the
+/// new recording id.
+#[tauri::command]
+async fn phoneme_import(url: String) -> Result<String, String> {
+    let out = tauri::async_runtime::spawn_blocking(move || run_phoneme(&["import", &url]))
+        .await
+        .map_err(|e| e.to_string())??;
+    let id = out.split_whitespace().last().unwrap_or("").to_string();
+    if id.is_empty() {
+        return Err("Phoneme returned no recording id".into());
+    }
+    Ok(id)
+}
+
+/// Fetch a recording's transcript segments (empty while still transcribing).
+#[tauri::command]
+fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
+    let out = run_phoneme(&["--json", "show", &id, "--segments"])?;
+    let mut segs = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(s) = serde_json::from_str::<Segment>(line) {
+            segs.push(s);
+        }
+    }
+    Ok(segs)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -141,6 +206,9 @@ pub fn run() {
             export_json,
             import_json,
             save_markdown,
+            phoneme_available,
+            phoneme_import,
+            phoneme_segments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

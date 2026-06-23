@@ -1,7 +1,7 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import { api, type VideoWithCount, type Note, type SearchHit } from "./api";
+import { api, type VideoWithCount, type Note, type SearchHit, type Segment } from "./api";
 import { Player } from "./player";
 import { parseVideoId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
@@ -54,6 +54,10 @@ export class App extends LitElement {
   @state() private status = "";
   @state() private selectedId: string | null = null;
   @state() private tagFilter: string | null = null;
+  @state() private phonemeOk = false;
+  @state() private view: "notes" | "transcript" = "notes";
+  @state() private segments: Segment[] = [];
+  @state() private transcriptBusy = false;
 
   private player: Player | null = null;
   private lastSaved = 0;
@@ -116,6 +120,7 @@ export class App extends LitElement {
     this.player.onTick = (t, d) => this.onTick(t, d);
     this.player.onTitle = (title) => this.onTitle(title);
     this.player.onError = (code) => this.onPlayerError(code);
+    api.phonemeAvailable().then((ok) => (this.phonemeOk = ok)).catch(() => {});
   }
 
   private get current() { return this.videos.find((v) => v.id === this.currentId) ?? null; }
@@ -140,6 +145,7 @@ export class App extends LitElement {
   private async loadVideo(id: string, url?: string) {
     this.currentId = id;
     this.editing = null; this.filter = ""; this.dur = 0; this.lastSaved = 0; this.selectedId = null;
+    this.view = "notes"; this.segments = [];
     await api.upsertVideo(id, url ?? `https://youtu.be/${id}`);
     await this.refreshVideos();
     this.player?.load(id, this.current?.last_pos_secs ?? 0);
@@ -248,6 +254,31 @@ export class App extends LitElement {
     if (!md || !dir) return;
     try { const path = await api.saveMarkdown(dir, `${this.currentSlug()}.md`, md); this.flash(`Saved → ${path}`); }
     catch (e) { this.flash(String(e)); }
+  }
+
+  // ── Phoneme integration (optional) ──────────────────────────────────────
+  private recMap(): Record<string, string> {
+    try { return JSON.parse(localStorage.getItem("ytnt.phoneme") || "{}"); } catch { return {}; }
+  }
+  private recId(): string | null { return this.currentId ? (this.recMap()[this.currentId] ?? null) : null; }
+  private setRecId(rec: string) {
+    if (!this.currentId) return;
+    const m = this.recMap(); m[this.currentId] = rec; localStorage.setItem("ytnt.phoneme", JSON.stringify(m));
+    this.requestUpdate();
+  }
+  private async sendToPhoneme() {
+    const v = this.current; if (!v) return;
+    this.transcriptBusy = true; this.flash("Sending to Phoneme… (download + queue)");
+    try { const rec = await api.phonemeImport(v.url); this.setRecId(rec); this.flash("Queued — transcribing in Phoneme"); }
+    catch (e) { this.flash(String(e)); }
+    finally { this.transcriptBusy = false; }
+  }
+  private async loadTranscript() {
+    const rec = this.recId(); if (!rec) return;
+    this.transcriptBusy = true;
+    try { this.segments = await api.phonemeSegments(rec); if (!this.segments.length) this.flash("Still transcribing… try again shortly"); }
+    catch (e) { this.flash(String(e)); }
+    finally { this.transcriptBusy = false; }
   }
 
   private setSetting<K extends keyof Settings>(k: K, v: Settings[K]) {
@@ -369,23 +400,35 @@ export class App extends LitElement {
         </div>
 
         <div class="toolbar">
-          <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">Alt+N</span></button>
-          <input type="text" placeholder="Filter notes…" .value=${this.filter}
-            @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)} />
-          ${this.current?.manual_order ? html`<button @click=${() => this.resetOrder()}>By time</button>` : nothing}
-          <button class="ghost" title="Copy notes as Markdown" aria-label="Copy notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.copyMd()}>${I.copy}</button>
-          <button class="ghost" title="Download .md" aria-label="Download notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.downloadMd()}>${I.download}</button>
-          <button class="ghost" aria-label="Save notes to vault folder" title=${this.settings.vaultDir ? "Save .md to vault folder" : "Set a vault folder in settings first"}
-            ?disabled=${!this.notes.length || !this.settings.vaultDir} @click=${() => this.saveToVault()}>${I.folder}</button>
+          <div class="tabs">
+            <button class="tab ${this.view === "notes" ? "on" : ""}" @click=${() => (this.view = "notes")}>Notes</button>
+            <button class="tab ${this.view === "transcript" ? "on" : ""}" @click=${() => (this.view = "transcript")}>Transcript</button>
+          </div>
+          ${this.view === "notes" ? html`
+            <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">Alt+N</span></button>
+            <input type="text" placeholder="Filter notes…" .value=${this.filter}
+              @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)} />
+            ${this.current?.manual_order ? html`<button @click=${() => this.resetOrder()}>By time</button>` : nothing}
+            <button class="ghost" title="Copy notes as Markdown" aria-label="Copy notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.copyMd()}>${I.copy}</button>
+            <button class="ghost" title="Download .md" aria-label="Download notes as Markdown" ?disabled=${!this.notes.length} @click=${() => this.downloadMd()}>${I.download}</button>
+            <button class="ghost" aria-label="Save notes to vault folder" title=${this.settings.vaultDir ? "Save .md to vault folder" : "Set a vault folder in settings first"}
+              ?disabled=${!this.notes.length || !this.settings.vaultDir} @click=${() => this.saveToVault()}>${I.folder}</button>
+          ` : html`
+            ${this.recId() ? html`<button @click=${() => this.loadTranscript()} ?disabled=${this.transcriptBusy}>${this.transcriptBusy ? "Loading…" : "Reload"}</button>` : nothing}
+            ${this.phonemeOk && this.currentId && !this.recId() ? html`<button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Send to Phoneme</button>` : nothing}
+          `}
+          <span class="grow"></span>
           <span class="status" role="status" aria-live="polite">${this.status}</span>
         </div>
 
-        <div class="notes" role="list" aria-label="Notes for this video" @click=${(e: Event) => this.onNotesClick(e)}>
-          ${!this.currentId ? html`<div class="empty">Load a video, then press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.</div>` : nothing}
-          ${this.currentId && filtered.length === 0 && !this.editing ? html`<div class="empty">No notes yet.</div>` : nothing}
-          ${this.editing && !this.editing.id ? this.renderEditor() : nothing}
-          ${filtered.map((n) => (this.editing?.id === n.id ? this.renderEditor() : this.renderNote(n)))}
-        </div>
+        ${this.view === "notes"
+          ? html`<div class="notes" role="list" aria-label="Notes for this video" @click=${(e: Event) => this.onNotesClick(e)}>
+              ${!this.currentId ? html`<div class="empty">Load a video, then press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.</div>` : nothing}
+              ${this.currentId && filtered.length === 0 && !this.editing ? html`<div class="empty">No notes yet.</div>` : nothing}
+              ${this.editing && !this.editing.id ? this.renderEditor() : nothing}
+              ${filtered.map((n) => (this.editing?.id === n.id ? this.renderEditor() : this.renderNote(n)))}
+            </div>`
+          : this.renderTranscript()}
       </main>
 
       ${this.searchOpen ? this.renderSearch() : nothing}
@@ -466,6 +509,25 @@ export class App extends LitElement {
           </div></div>
         <div class="hint muted sm">Shortcuts: <b>Alt+N</b> note · <b>Space/K</b> play · <b>J/L</b> ±10s · <b>←/→</b> ±5s · <b>M</b> mute · <b>F</b> fullscreen · <b>0–9</b> seek · <b>↑/↓</b> select note</div>
       </div>
+    </div>`;
+  }
+
+  private renderTranscript() {
+    if (!this.currentId) return html`<div class="notes"><div class="empty">Load a video first.</div></div>`;
+    if (!this.recId() && !this.phonemeOk) {
+      return html`<div class="notes"><div class="empty">Transcripts come from <b>Phoneme</b>. Install and run Phoneme, then reopen this app to enable “Send to Phoneme”.</div></div>`;
+    }
+    if (!this.recId()) {
+      return html`<div class="notes"><div class="empty">This video hasn't been sent to Phoneme yet.<br><br>
+        <button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Send to Phoneme</button></div></div>`;
+    }
+    if (!this.segments.length) {
+      return html`<div class="notes"><div class="empty">${this.transcriptBusy ? "Loading…" : "No transcript loaded yet — it may still be transcribing."}<br><br>
+        <button @click=${() => this.loadTranscript()} ?disabled=${this.transcriptBusy}>Load transcript</button></div></div>`;
+    }
+    return html`<div class="notes transcript">
+      ${this.segments.map((s) => html`<button class="seg" @click=${() => this.seek(s.start_ms / 1000)}>
+        <span class="ts">${formatTime(s.start_ms / 1000)}</span><span class="grow">${s.text}</span></button>`)}
     </div>`;
   }
 
@@ -555,6 +617,14 @@ export class App extends LitElement {
     .toolbar input { flex:1; }
     .kbd { font-size:11px; color:color-mix(in srgb, var(--accent-fg) 72%, transparent); font-weight:600; padding-left:2px; }
     .status { color:var(--fg-muted); font-size:12px; white-space:nowrap; }
+    .tabs { display:flex; gap:2px; background:var(--bg-deep); border:1px solid var(--border); border-radius:var(--r-sm); padding:2px; flex:0 0 auto; }
+    .tab { background:transparent; border:none; color:var(--fg-muted); padding:5px 12px; border-radius:6px; }
+    .tab:hover { color:var(--fg-default); background:transparent; }
+    .tab.on { background:var(--bg-elevated); color:var(--fg-default); }
+    .transcript { gap:1px; }
+    .seg { display:flex; gap:10px; align-items:baseline; text-align:left; width:100%; background:transparent; border:1px solid transparent; border-radius:6px; padding:6px 9px; color:var(--fg-default); line-height:1.5; }
+    .seg:hover { background:var(--hover); }
+    .seg .ts { background:none; padding:0; }
 
     .notes { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:8px; padding-right:3px; }
     .note { display:flex; gap:12px; align-items:flex-start; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--r); padding:12px 14px; transition:border-color .12s, box-shadow .12s; }
