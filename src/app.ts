@@ -36,6 +36,7 @@ const I = {
   caret: svg`<svg viewBox="0 0 24 24" class="i"><path d="M6 9l6 6 6-6"/></svg>`,
   pin: svg`<svg viewBox="0 0 24 24" class="i"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6zM12 16v5"/></svg>`,
   replace: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg>`,
+  expand: svg`<svg viewBox="0 0 24 24" class="i"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -80,6 +81,7 @@ export class App extends LitElement {
   @state() private findReplaceOpen = false;
   @state() private sortDesc = true;
   @state() private selected = new Set<string>();
+  @state() private fsNote: { t: number } | null = null;
   @state() private phonemeOk = false;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private rate = 1;
@@ -196,10 +198,26 @@ export class App extends LitElement {
     if (!this.player || !this.currentId) return;
     const t = applyOffset(this.player.currentTime, this.settings.offset);
     if (this.settings.autopause) this.player.pause();
+    // In our fullscreen, the notes pane is hidden — capture via an overlay that
+    // lives inside #playerWrap so it renders on top of the fullscreened video.
+    const pw = this.renderRoot.querySelector("#playerWrap");
+    if (document.fullscreenElement && document.fullscreenElement === pw) {
+      this.fsNote = { t };
+      this.updateComplete.then(() => (this.renderRoot.querySelector("#fsNoteInput") as HTMLInputElement)?.focus());
+      return;
+    }
     this.editing = { t, draft: "" };
     this.updateComplete.then(() =>
       (this.renderRoot.querySelector("#editor textarea") as HTMLTextAreaElement)?.focus());
   }
+  private async fsCommit(text: string) {
+    const n = this.fsNote; if (!n) return;
+    if (text.trim() && this.currentId) await api.createNote(this.currentId, n.t, text.trim());
+    this.fsNote = null;
+    if (this.settings.autopause) this.player?.play();
+    await this.refreshNotes(); await this.refreshVideos();
+  }
+  private fsCancel() { this.fsNote = null; if (this.settings.autopause) this.player?.play(); }
   private async commit(text: string) {
     const e = this.editing; if (!e) return;
     const isNew = !e.id;
@@ -483,18 +501,6 @@ export class App extends LitElement {
     vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
     const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen;
     return html`
-      <header class="titlebar" data-tauri-drag-region ?inert=${trapped}>
-        <div class="tb-left" data-tauri-drag-region>
-          <button class="tb-btn" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
-          <span class="tb-title"><span class="dot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span> youtube-note-thing</span>
-        </div>
-        ${this.settings.stripTitlebar ? html`<div class="tb-controls">
-          <button class="tb-btn" title="Minimize" @click=${() => win()?.minimize()}>${I.min}</button>
-          <button class="tb-btn" title="Maximize" @click=${() => win()?.toggleMaximize()}>${I.max}</button>
-          <button class="tb-btn close" title="Close" @click=${() => win()?.close()}>${I.close}</button>
-        </div>` : nothing}
-      </header>
-
       <aside ?inert=${trapped}>
         <div class="section">
           <div class="sec-head-row">
@@ -551,15 +557,18 @@ export class App extends LitElement {
       </aside>
 
       <main ?inert=${trapped}>
-        ${!this.currentId ? html`<div class="topbar">
+        ${!this.currentId ? html`<div class="topbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
+          <button class="ham" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
           <input id="url" type="text" placeholder="Paste a YouTube URL or id…" autocomplete="off"
             @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
           <button class="primary" @click=${() => this.addFromInput()}>Load</button>
           <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
           <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
+          <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
         </div>` : nothing}
 
-        ${this.current ? html`<div class="nowplaying">
+        ${this.current ? html`<div class="nowplaying" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
+          <button class="ham" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
           <div class="np-main">
             <div class="np-title" title=${this.current.title || this.current.id}>${this.current.title || this.current.id}</div>
             <div class="np-meta">${this.current.channel || ""}${(this.dur || this.current.duration) ? html` · ${formatTime(this.dur || this.current.duration || 0)}` : nothing}</div>
@@ -568,9 +577,22 @@ export class App extends LitElement {
             <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
             <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
             <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
+            <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
           </div>
         </div>` : nothing}
-        <div id="playerWrap" class=${this.currentId ? "" : "hidden"}><div id="player"></div></div>
+        <div id="playerWrap" class=${this.currentId ? "" : "hidden"}>
+          <div id="player"></div>
+          ${this.currentId ? html`<button class="fs-btn" title="Fullscreen (F) — add notes without leaving" @click=${() => this.toggleFullscreen()}>${I.expand}</button>` : nothing}
+          ${this.fsNote ? html`<div class="fs-note">
+            <span class="ts">${formatTime(this.fsNote.t)}</span>
+            <input id="fsNoteInput" type="text" placeholder="Note at this moment — Enter to save, Esc to cancel"
+              @keydown=${(e: KeyboardEvent) => {
+                if (e.key === "Enter") { e.preventDefault(); this.fsCommit((e.target as HTMLInputElement).value); }
+                else if (e.key === "Escape") { e.preventDefault(); this.fsCancel(); }
+              }} />
+            <button class="primary" @click=${() => this.fsCommit((this.renderRoot.querySelector("#fsNoteInput") as HTMLInputElement)?.value || "")}>Add</button>
+          </div>` : nothing}
+        </div>
         <div id="timeline" class=${this.currentId ? "" : "hidden"} title="click to seek" @click=${(e: MouseEvent) => this.timelineClick(e)}>
           <div id="progress"></div>
           ${this.dur ? this.notes.map((n) => html`<div class="marker" style="left:${(n.t_secs / this.dur) * 100}%"
@@ -705,7 +727,7 @@ export class App extends LitElement {
           <label class="field"><span>Strip system title bar</span>
             <input type="checkbox" .checked=${this.settings.stripTitlebar}
               @change=${(e: Event) => this.setSetting("stripTitlebar", (e.target as HTMLInputElement).checked)} /></label>
-          <div class="help muted sm">Hide the OS window frame and use the app’s own chrome. On Windows, turning it back off may need a restart.</div>
+          <div class="help muted sm">Borderless, clean window with no OS title bar or window buttons — for tiling / keyboard window managers. Use your OS shortcuts to move and close. On Windows, turning this back off may need a restart.</div>
         </section>
         <section class="settings-section">
           <h3>Capture</h3>
@@ -816,7 +838,7 @@ export class App extends LitElement {
       --tint: color-mix(in srgb, var(--accent) 15%, transparent);
       --hover: color-mix(in srgb, var(--fg-default) 8%, transparent);
       --ui-motion: 200ms; --ui-motion-fast: 120ms;
-      display:grid; grid-template-columns:264px 1fr; grid-template-rows:32px minmax(0,1fr);
+      display:grid; grid-template-columns:264px 1fr; grid-template-rows:minmax(0,1fr);
       height:100vh; background:var(--bg-deep); color:var(--fg-default);
       font:13.5px/1.55 "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
       -webkit-font-smoothing:antialiased;
@@ -915,8 +937,12 @@ export class App extends LitElement {
     input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
 
     main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; }
-    .topbar { display:flex; gap:8px; }
+    .topbar { display:flex; gap:8px; align-items:center; }
     .topbar input { flex:1; }
+    .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; }
+    .ham:hover { background:var(--hover); color:var(--fg-default); }
+    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; transition:background var(--ui-motion-fast); }
+    .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
     .topbar input, .topbar .ghost, .topbar .primary, .np-actions .ghost { height:32px; box-sizing:border-box; border-radius:6px; }
     .topbar input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
     .topbar input:focus-visible { outline:none; border-color:var(--kbd-cursor, var(--accent)); }
@@ -931,6 +957,15 @@ export class App extends LitElement {
     .np-link:hover { color:var(--accent); }
     #playerWrap { position:relative; background:#000; border:1px solid var(--border-subtle); border-radius:var(--r); overflow:hidden; aspect-ratio:16/9; width:100%; max-width:calc(68vh * 16 / 9); align-self:center; flex:0 0 auto; box-shadow:0 10px 34px rgba(0,0,0,.45); }
     #player { width:100%; height:100%; }
+    .fs-btn { position:absolute; top:10px; right:10px; z-index:4; display:inline-flex; padding:7px; border-radius:var(--r-sm);
+      background:color-mix(in srgb, var(--bg-deep) 55%, transparent); border:1px solid transparent; color:#fff; opacity:0; cursor:pointer; transition:opacity var(--ui-motion-fast); }
+    #playerWrap:hover .fs-btn { opacity:.85; }
+    .fs-btn:hover { opacity:1; background:color-mix(in srgb, var(--bg-deep) 80%, transparent); }
+    .fs-note { position:absolute; left:50%; bottom:24px; transform:translateX(-50%); z-index:6; display:flex; align-items:center; gap:8px;
+      background:color-mix(in srgb, var(--bg-deep) 92%, transparent); border:1px solid var(--accent); border-radius:var(--r); padding:8px 10px;
+      box-shadow:0 14px 44px rgba(0,0,0,.6); width:min(680px, 82%); backdrop-filter:blur(6px); }
+    .fs-note input { flex:1; }
+    .fs-note .ts { color:var(--accent); font-variant-numeric:tabular-nums; font-size:12px; flex:0 0 auto; padding-left:2px; }
     #timeline { position:relative; height:10px; background:var(--bg-elevated); border-radius:99px; cursor:pointer; flex:0 0 auto; margin:2px 0; }
     #progress { position:absolute; inset:0 100% 0 0; background:linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent), white 22%)); border-radius:99px; }
     .marker { position:absolute; top:-3px; width:3px; height:16px; background:var(--accent); border-radius:2px; transform:translateX(-50%); box-shadow:0 0 0 2px var(--bg-deep); }
@@ -1013,7 +1048,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: true };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }
