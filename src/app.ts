@@ -671,8 +671,6 @@ export class App extends LitElement {
         <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
         <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
         <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
-        <span class="grow"></span>
-        <button class="ham" title="Fullscreen the video panel" aria-label="Fullscreen the video panel" @click=${() => this.toggleFocus()}>${I.expand}</button>
       </header>
 
       <aside ?inert=${trapped}>
@@ -767,7 +765,10 @@ export class App extends LitElement {
               : html`<div class="np-title" title="Click to rename" @click=${() => { this.titleEditing = true; this.updateComplete.then(() => (this.renderRoot.querySelector(".np-title-edit") as HTMLInputElement)?.select()); }}>${this.current.title || this.current.id}</div>`}
             <div class="np-meta">${this.current.channel || ""}${(this.dur || this.current.duration) ? html` · ${formatTime(this.dur || this.current.duration || 0)}` : nothing}</div>
           </div>
-          <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
+          <div class="np-actions">
+            <button class="ghost" title="Fullscreen the video panel" aria-label="Fullscreen the video panel" @click=${() => this.toggleFocus()}>${I.expand}</button>
+            <button class="ghost np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</button>
+          </div>
         </div>` : nothing}
         <div id="playerWrap" class=${this.currentId ? "" : "hidden"}>
           <div id="player"></div>
@@ -1167,8 +1168,10 @@ export class App extends LitElement {
     .tb-btn:hover { background:var(--hover); color:var(--fg-default); }
     .tb-btn.close:hover { background:var(--err); color:var(--bg-deep); }
 
-    aside { grid-column:1; grid-row:2; background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-height:0; overflow-y:auto; padding-top:6px; }
-    .list { grid-column:2; grid-row:2; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg-deep); border-right:1px solid var(--border-subtle); }
+    aside { grid-column:1; grid-row:2; background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; padding-top:6px; }
+    .list { grid-column:2; grid-row:2; display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:var(--bg-deep); border-right:1px solid var(--border-subtle); }
+    :host([collapsed]) aside { border-right:none; }
+    :host([nolist]) .list { border-right:none; }
     .appbar { grid-column:1/-1; grid-row:1; padding:0 12px; background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); }
     .appbar .ham.off { opacity:.45; }
     .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); padding:14px 16px 6px; }
@@ -1184,8 +1187,8 @@ export class App extends LitElement {
     .libcard .tx { color:var(--accent); }
     .ctags { display:flex; flex-wrap:wrap; gap:3px; margin-top:3px; }
     .ctag { font-size:9.5px; padding:1px 6px; border-radius:999px; background:var(--bg-deep); color:var(--fg-muted); }
-    .lc-actions { position:absolute; top:4px; right:4px; display:flex; gap:1px; }
-    .libcard .lc-actions .ghost { padding:3px; opacity:.65; }
+    .lc-actions { position:absolute; top:4px; right:4px; display:flex; gap:1px; border-radius:6px; background:color-mix(in srgb, var(--bg-deep) 78%, transparent); backdrop-filter:blur(2px); }
+    .libcard .lc-actions .ghost { padding:3px; opacity:.85; }
     .libcard:hover .lc-actions .ghost { opacity:.9; }
     .libcard .lc-actions .ghost:hover { opacity:1; background:var(--hover); }
     .libcard .rm:hover { color:var(--err); background:color-mix(in srgb, var(--err) 14%, transparent); }
