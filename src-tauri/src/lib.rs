@@ -213,6 +213,41 @@ fn phoneme_tags() -> Vec<PhonemeTag> {
     serde_json::from_str(&out).unwrap_or_default()
 }
 
+/// Tags attached to ONE Phoneme recording — the pull side of membership sync.
+/// Returns `Err` (not an empty list) when the daemon is unreachable, so the
+/// frontend never mistakes "couldn't reach Phoneme" for "no tags" and detaches
+/// everything.
+#[tauri::command]
+fn phoneme_tags_for(rec_id: String) -> Result<Vec<PhonemeTag>, String> {
+    let out = run_phoneme(&["--json", "tag", "for", &rec_id])?;
+    serde_json::from_str(&out).map_err(|e| format!("parse tags: {e}"))
+}
+
+/// Push membership changes for one recording: create-if-missing (with the
+/// supplied color), then attach/detach by name. Any attach/detach failure
+/// propagates so the change stays pending instead of being marked synced.
+#[tauri::command]
+fn phoneme_apply_tags(
+    rec_id: String,
+    add: Vec<String>,
+    remove: Vec<String>,
+    colors: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    for name in &add {
+        // Best-effort create — a no-op/error if the tag already exists; the
+        // attach below resolves it by name either way.
+        match colors.get(name) {
+            Some(c) => { let _ = run_phoneme(&["tag", "add", name, "--color", c]); }
+            None => { let _ = run_phoneme(&["tag", "add", name]); }
+        }
+        run_phoneme(&["tag", "attach", &rec_id, name])?;
+    }
+    for name in &remove {
+        run_phoneme(&["tag", "detach", &rec_id, name])?;
+    }
+    Ok(())
+}
+
 /// Is the Phoneme CLI present and its daemon reachable?
 #[tauri::command]
 fn phoneme_available() -> bool {
@@ -1189,6 +1224,8 @@ pub fn run() {
             phoneme_available,
             phoneme_probe,
             phoneme_tags,
+            phoneme_tags_for,
+            phoneme_apply_tags,
             set_phoneme_bin,
             phoneme_import,
             phoneme_segments,

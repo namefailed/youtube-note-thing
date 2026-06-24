@@ -42,6 +42,36 @@ export function tagInk(hex: string): string {
   return (r * 299 + g * 587 + b * 114) / 1000 >= 128 ? "#11111b" : "#ffffff";
 }
 
+/** 3-way set merge for bidirectional tag sync between ytnt and a Phoneme
+ *  recording. `base` is the tag set as of the last successful sync (null = never
+ *  synced). Tags are case-insensitive (Phoneme tags are CI-unique); the merged
+ *  display name prefers the remote casing, then local. Because "added" means
+ *  not-in-base and "removed" means in-base, the same tag can't be both — so the
+ *  merge is unambiguous (no conflicts). First sync = union (no history → never
+ *  delete). Returns the merged set plus what to push to Phoneme. */
+export interface TagMerge { merged: string[]; toAttach: string[]; toDetach: string[]; }
+export function mergeTagSets(base: string[] | null, local: string[], remote: string[]): TagMerge {
+  const key = (s: string) => s.trim().toLowerCase();
+  const disp = new Map<string, string>(); // lc -> display name; remote casing wins
+  for (const s of base ?? []) if (key(s)) disp.set(key(s), s.trim());
+  for (const s of local) if (key(s)) disp.set(key(s), s.trim());
+  for (const s of remote) if (key(s)) disp.set(key(s), s.trim());
+  const L = new Set(local.map(key).filter(Boolean));
+  const R = new Set(remote.map(key).filter(Boolean));
+  const B = base == null ? null : new Set(base.map(key).filter(Boolean));
+  const mergedKeys = new Set<string>();
+  for (const k of new Set([...L, ...R, ...(B ?? [])])) {
+    if (B == null) { if (L.has(k) || R.has(k)) mergedKeys.add(k); continue; }
+    const added = (L.has(k) && !B.has(k)) || (R.has(k) && !B.has(k));
+    const removed = (!L.has(k) && B.has(k)) || (!R.has(k) && B.has(k));
+    if (added || (B.has(k) && !removed)) mergedKeys.add(k);
+  }
+  const merged = [...mergedKeys].map((k) => disp.get(k)!);
+  const toAttach = merged.filter((n) => !R.has(key(n)));        // in result, not yet on Phoneme
+  const toDetach = [...R].filter((k) => !mergedKeys.has(k)).map((k) => disp.get(k)!); // on Phoneme, not in result
+  return { merged, toAttach, toDetach };
+}
+
 export function parsePlaylistId(input: string): string | null {
   if (!input) return null;
   const m = String(input).match(/[?&]list=([A-Za-z0-9_-]+)/);

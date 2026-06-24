@@ -3,7 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion, type PhonemeProbe } from "./api";
 import { Player } from "./player";
-import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR } from "./lib";
+import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR, mergeTagSets } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -63,7 +63,7 @@ function themeLabel(slug: string): string {
   return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
-interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; }
+interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; }
 type Editing = { id?: string; t: number; draft: string } | null;
 
 @customElement("ytnt-app")
@@ -114,6 +114,14 @@ export class App extends LitElement {
     "#f38ba8", "#eba0ac", "#fab387", "#f9e2af", "#a6e3a1", "#94e2d5", "#89dceb",
     "#74c7ec", "#89b4fa", "#b4befe", "#cba6f7", "#f5c2e7", "#f2cdcd", "#f5e0dc",
   ];
+  // Per-linked-video tag set as of last successful sync — the base for the 3-way
+  // merge. Doubles as the durable "queue": local edits that differ from the base
+  // while Phoneme is down get pushed on the next reconcile. localStorage, not a
+  // catalog/DB — Phoneme stays the tag authority.
+  private tagSyncBase: Record<string, string[]> = (() => {
+    try { return JSON.parse(localStorage.getItem("ytnt.tagSyncBase") || "{}"); } catch { return {}; }
+  })();
+  @state() private tagSyncing = false;
   @state() private phonemePresent = false;
   @state() private phonemeCompatible = true;
   @state() private phonemeVersion = "";
@@ -205,7 +213,7 @@ export class App extends LitElement {
       this.phonemeCompatible = p.compatible;
       this.phonemeVersion = p.version;
       // Pull Phoneme's tag colors when the daemon (re)appears.
-      if (p.daemon_ok && !this.prevDaemonOk) this.refreshTagColors();
+      if (p.daemon_ok && !this.prevDaemonOk) { this.refreshTagColors(); this.flushPendingTags(); }
       this.prevDaemonOk = p.daemon_ok;
     } catch {
       this.phonemeOk = false; this.phonemePresent = false; this.prevDaemonOk = false;
@@ -236,6 +244,71 @@ export class App extends LitElement {
     this.localTagColors = { ...this.localTagColors, [name.toLowerCase()]: hex };
     localStorage.setItem("ytnt.tagColors", JSON.stringify(this.localTagColors));
     this.requestUpdate();
+  }
+
+  // --- Tag membership sync (bidirectional; Phoneme is the catalog authority) ---
+  private tagSetEq(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    const s = new Set(a.map((x) => x.toLowerCase()));
+    return b.every((x) => s.has(x.toLowerCase()));
+  }
+  private phonemeRef(v: { ext_ref: string | null }): string | null {
+    const r = parseRef(v.ext_ref);
+    return r && r.integration === "phoneme" ? r.ref : null;
+  }
+  /** Reconcile one linked video's tags with its Phoneme recording via a 3-way
+   *  merge: push local changes, pull remote ones, advance the base snapshot.
+   *  Leaves changes pending (returns false, base untouched) when sync is off,
+   *  the video is unlinked, or Phoneme is unreachable. Returns whether ytnt's
+   *  own tags changed (so the caller can refresh). */
+  private async reconcileVideoTags(videoId: string, localOverride?: string[]): Promise<boolean> {
+    if (!this.settings.syncTags || !this.phonemeOk) return false;
+    const v = this.videos.find((x) => x.id === videoId);
+    if (!v) return false;
+    const rec = this.phonemeRef(v);
+    if (!rec) return false;
+    const local = localOverride ?? v.tags;
+    let remote: string[];
+    try { remote = (await api.phonemeTagsFor(rec)).map((t) => t.name); }
+    catch { return false; } // daemon down/error — keep pending, never detach
+    const { merged, toAttach, toDetach } = mergeTagSets(this.tagSyncBase[videoId] ?? null, local, remote);
+    if (toAttach.length || toDetach.length) {
+      const colors: Record<string, string> = {};
+      for (const name of toAttach) { const c = this.tagColorOf(name); if (c) colors[name] = c; }
+      try { await api.phonemeApplyTags(rec, toAttach, toDetach, colors); }
+      catch { return false; } // push failed — don't advance base, retry later
+    }
+    let changed = false;
+    if (!this.tagSetEq(merged, local)) { await api.setVideoTags(videoId, merged); changed = true; }
+    this.tagSyncBase = { ...this.tagSyncBase, [videoId]: merged };
+    localStorage.setItem("ytnt.tagSyncBase", JSON.stringify(this.tagSyncBase));
+    return changed;
+  }
+  /** Push linked videos whose local tags drifted from the base while Phoneme was
+   *  down — the durable "queue" draining when the daemon reappears. */
+  private async flushPendingTags() {
+    if (!this.settings.syncTags) return;
+    let any = false;
+    for (const v of this.videos) {
+      if (!this.phonemeRef(v)) continue;
+      const base = this.tagSyncBase[v.id];
+      const pending = base === undefined ? v.tags.length > 0 : !this.tagSetEq(v.tags, base);
+      if (pending && await this.reconcileVideoTags(v.id)) any = true;
+    }
+    if (any) await this.refreshVideos();
+  }
+  /** "Sync all" — full pull+push across every linked video (Tag Manager button). */
+  private async syncAllTags() {
+    if (!this.phonemeOk) { this.flash("Phoneme isn't running", "err"); return; }
+    this.tagSyncing = true;
+    let n = 0;
+    for (const v of this.videos) {
+      if (!this.phonemeRef(v)) continue;
+      try { await this.reconcileVideoTags(v.id); n++; } catch { /* skip one bad video */ }
+    }
+    await this.refreshVideos();
+    this.tagSyncing = false;
+    this.flash(`Synced tags for ${n} linked video${n === 1 ? "" : "s"}`, "ok");
   }
 
   firstUpdated() {
@@ -312,6 +385,8 @@ export class App extends LitElement {
     await this.refreshVideos();
     this.player?.load(id, this.current?.last_pos_secs ?? 0);
     await this.refreshNotes();
+    // Pull/push this video's tags with Phoneme (no-op if unlinked or down).
+    this.reconcileVideoTags(id).then((changed) => { if (changed) this.refreshVideos(); });
   }
 
   private async addFromInput() {
@@ -645,6 +720,11 @@ export class App extends LitElement {
       if (v && !v.tags.includes(t)) await api.setVideoTags(id, [...v.tags, t]);
     }
     await this.refreshVideos();
+    for (const id of this.selected) {
+      const v = this.videos.find((x) => x.id === id);
+      if (v && this.phonemeRef(v)) await this.reconcileVideoTags(id);
+    }
+    await this.refreshVideos();
     this.flash(`Tagged ${n} video${n > 1 ? "s" : ""} “${t}”`, "ok");
   }
   private bulkDrag(e: MouseEvent) {
@@ -759,11 +839,17 @@ export class App extends LitElement {
   private async addTag(name: string) {
     const v = this.current; const t = name.trim();
     if (!v || !t || v.tags.includes(t)) return;
-    await api.setVideoTags(v.id, [...v.tags, t]); await this.refreshVideos();
+    const next = [...v.tags, t];
+    await api.setVideoTags(v.id, next);
+    await this.reconcileVideoTags(v.id, next);
+    await this.refreshVideos();
   }
   private async removeTag(name: string) {
     const v = this.current; if (!v) return;
-    await api.setVideoTags(v.id, v.tags.filter((x) => x !== name)); await this.refreshVideos();
+    const next = v.tags.filter((x) => x !== name);
+    await api.setVideoTags(v.id, next);
+    await this.reconcileVideoTags(v.id, next);
+    await this.refreshVideos();
   }
   private startTagEdit(name: string, e: Event) {
     e.stopPropagation();
@@ -1105,7 +1191,12 @@ export class App extends LitElement {
       <div class="panel" role="dialog" aria-modal="true" aria-label="Tag manager" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Tag manager</span>
           <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
-        <div class="help muted sm" style="margin:2px 0 10px">Rename and recolor your tags. Changes are local to this app; colors mirror from Phoneme, which stays the catalog authority (delete and merge live there).</div>
+        <div class="tag-mgr-bar">
+          <div class="help muted sm">Rename and recolor your tags. Changes are local; colors mirror from Phoneme, the catalog authority (delete and merge live there).</div>
+          ${this.settings.syncTags ? html`<button class="btn" title=${this.phonemeOk ? "Pull + push tags for every video sent to Phoneme" : "Phoneme isn't running"}
+            ?disabled=${!this.phonemeOk || this.tagSyncing} @click=${() => this.syncAllTags()}>
+            ${this.tagSyncing ? html`<span class="spin"></span> Syncing…` : html`${I.gear} Sync all`}</button>` : nothing}
+        </div>
         ${tags.length ? html`<div class="tag-mgr-list">
           ${tags.map((t) => {
             const uses = this.videos.filter((v) => v.tags.includes(t)).length;
@@ -1179,6 +1270,10 @@ export class App extends LitElement {
             <input type="text" placeholder="auto-detect — or e.g. C:\\…\\phoneme.exe" .value=${this.settings.phonemeBin}
               @input=${(e: Event) => this.setSetting("phonemeBin", (e.target as HTMLInputElement).value)} /></label>
           <div class="help muted sm">Leave blank to auto-detect (PATH, then a local build). Point it at a stable release build so transcription keeps working while you rebuild Phoneme.</div>
+          <label class="field"><span>Sync tags with Phoneme</span>
+            <input type="checkbox" .checked=${this.settings.syncTags}
+              @change=${(e: Event) => this.setSetting("syncTags", (e.target as HTMLInputElement).checked)} /></label>
+          <div class="help muted sm">Two-way for videos you've sent to Phoneme: tagging here attaches the tag there, and tags added in Phoneme appear here. Edits made while Phoneme is closed sync the next time it's running.</div>
         </section>
         <section class="settings-section">
           <h3>YouTube account</h3>
@@ -1534,6 +1629,9 @@ export class App extends LitElement {
       padding:2px 6px; border-radius:4px; white-space:nowrap; }
     .tag-mgr-badge.in-use { background:rgba(166,227,161,0.12); color:var(--ok); border:1px solid rgba(166,227,161,0.25); }
     .tag-mgr-badge.orphaned { background:rgba(255,255,255,0.04); color:var(--fg-faded); border:1px solid var(--border-subtle); }
+    .tag-mgr-bar { display:flex; align-items:center; gap:10px; margin:2px 0 10px; }
+    .tag-mgr-bar .help { flex:1; margin:0; }
+    .tag-mgr-bar .btn { flex:0 0 auto; padding:6px 11px; font-size:12px; }
     .chip .x { background:none; border:none; padding:0; margin:0; color:var(--fg-faded); cursor:pointer; font-size:14px; line-height:1; }
     .chip .x:hover { color:var(--err); }
     .tag-add { width:84px; padding:4px 10px; border-radius:999px; font-size:11.5px; background:var(--bg-deep); }
@@ -1710,7 +1808,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "" };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "", syncTags: true };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }

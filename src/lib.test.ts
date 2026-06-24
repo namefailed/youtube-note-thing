@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, tsLink, notesToMarkdown, safeTagColor, tagInk } from "./lib";
+import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, tsLink, notesToMarkdown, safeTagColor, tagInk, mergeTagSets } from "./lib";
+
+const sorted = (a: string[]) => [...a].sort();
 
 const ID = "dQw4w9WgXcQ";
 
@@ -15,6 +17,62 @@ describe("tag colors", () => {
     expect(tagInk("#000000")).toBe("#ffffff");
     expect(tagInk("#cba6f7")).toBe("#11111b"); // mauve is light
     expect(tagInk("notahex")).toBe("");
+  });
+});
+
+describe("mergeTagSets (bidirectional tag sync)", () => {
+  it("first sync (no base) unions both sides, deletes nothing", () => {
+    const m = mergeTagSets(null, ["a", "b"], ["b", "c"]);
+    expect(sorted(m.merged)).toEqual(["a", "b", "c"]);
+    expect(sorted(m.toAttach)).toEqual(["a"]); // a not yet on Phoneme
+    expect(m.toDetach).toEqual([]);            // never delete on first sync
+  });
+  it("local add propagates to Phoneme", () => {
+    const m = mergeTagSets(["a"], ["a", "b"], ["a"]);
+    expect(sorted(m.merged)).toEqual(["a", "b"]);
+    expect(m.toAttach).toEqual(["b"]);
+    expect(m.toDetach).toEqual([]);
+  });
+  it("local remove detaches from Phoneme", () => {
+    const m = mergeTagSets(["a", "b"], ["a"], ["a", "b"]);
+    expect(m.merged).toEqual(["a"]);
+    expect(m.toAttach).toEqual([]);
+    expect(m.toDetach).toEqual(["b"]);
+  });
+  it("remote add is pulled into ytnt", () => {
+    const m = mergeTagSets(["a"], ["a"], ["a", "b"]);
+    expect(sorted(m.merged)).toEqual(["a", "b"]); // ytnt gains b
+    expect(m.toAttach).toEqual([]);               // already on Phoneme
+    expect(m.toDetach).toEqual([]);
+  });
+  it("remote remove drops it from ytnt", () => {
+    const m = mergeTagSets(["a", "b"], ["a", "b"], ["a"]);
+    expect(m.merged).toEqual(["a"]);
+    expect(m.toDetach).toEqual([]); // already gone on Phoneme
+  });
+  it("simultaneous different changes both apply", () => {
+    // local removed 'x', remote added 'y' since base {x}
+    const m = mergeTagSets(["x"], [], ["x", "y"]);
+    expect(m.merged).toEqual(["y"]);
+    expect(m.toDetach).toEqual(["x"]); // honor local removal
+    expect(m.toAttach).toEqual([]);    // y already on Phoneme
+  });
+  it("both removed the same tag → gone, nothing to push", () => {
+    const m = mergeTagSets(["a", "b"], ["a"], ["a"]);
+    expect(m.merged).toEqual(["a"]);
+    expect(m.toAttach).toEqual([]);
+    expect(m.toDetach).toEqual([]);
+  });
+  it("steady state (all equal) is a no-op", () => {
+    const m = mergeTagSets(["a", "b"], ["a", "b"], ["a", "b"]);
+    expect(m.toAttach).toEqual([]);
+    expect(m.toDetach).toEqual([]);
+  });
+  it("matches case-insensitively, keeps Phoneme's casing", () => {
+    const m = mergeTagSets(["Lecture"], ["lecture"], ["Lecture"]);
+    expect(m.merged).toEqual(["Lecture"]); // remote casing wins
+    expect(m.toAttach).toEqual([]);
+    expect(m.toDetach).toEqual([]);
   });
 });
 

@@ -52,6 +52,9 @@ export const api = {
   phonemeAvailable: () => invoke<boolean>("phoneme_available"),
   phonemeProbe: () => invoke<PhonemeProbe>("phoneme_probe"),
   phonemeTags: () => invoke<PhonemeTag[]>("phoneme_tags"),
+  phonemeTagsFor: (recId: string) => invoke<PhonemeTag[]>("phoneme_tags_for", { recId }),
+  phonemeApplyTags: (recId: string, add: string[], remove: string[], colors: Record<string, string>) =>
+    invoke<void>("phoneme_apply_tags", { recId, add, remove, colors }),
   phonemeImport: (url: string) => invoke<string>("phoneme_import", { url }),
   phonemeSegments: (id: string) => invoke<Segment[]>("phoneme_segments", { id }),
   phonemeChapters: (id: string) => invoke<Chapter[]>("phoneme_chapters", { id }),
