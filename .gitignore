@@ -45,3 +45,5 @@ archive_internal/*
 !archive_internal/README.md
 scratch/
 .aider*
+.claude/
+.claude-worktrees/

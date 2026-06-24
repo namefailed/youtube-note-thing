@@ -6,7 +6,7 @@ Paste a URL, watch the video, hit a key — your note is pinned to that exact se
 timestamp to jump back. Your notes live in a local SQLite file you own, and export to plain
 Markdown or your PKM of choice. No account, no cloud, no tracking.
 
-**Status:** Working **v1** (Tauri 2 + Lit + sqlx). See [`plans/`](plans/) for design docs.
+**Status:** Working **v1** (Tauri 2 + Lit + sqlx).
 
 ## Develop
 
@@ -25,7 +25,7 @@ Embedded player · timestamped capture (`Alt+N`, configurable pre-roll offset, a
 marker timeline · keyboard transport (`Space`, `←/→`, `±` speed) and note nav (`↑/↓`, `Enter`, `Delete`) ·
 searchable/taggable library with thumbnails · FTS5 full-text search · inline edit · reorder · resume ·
 Markdown rendering · **export** (copy/download `.md`, save to a vault folder, JSON backup/restore) ·
-custom dark titlebar · local SQLite you own.
+local SQLite you own.
 
 ---
 
@@ -49,7 +49,7 @@ Nobody owns **native desktop + local-first + open-source + a documented integrat
 the wedge. A desktop app can do what an extension can't: keyboard-first capture that never fights the
 page, a database you own, and direct connections to local daemons and vaults — including
 [Phoneme](https://github.com/namefailed/phoneme) for on-device transcription, semantic search, and
-RAG. See [COMPETITORS.md](plans/COMPETITORS.md) for the full landscape.
+RAG.
 
 ## What it is (and isn't)
 
@@ -82,17 +82,17 @@ The app works fully without any of these. When present, they light up:
   hooks, so this app never has to.
 - **Markdown / Obsidian** — built in, no integration needed.
 - **Community adapters** — the integration interface is documented; Notion, Logseq, Readwise, and
-  others can be added without touching the core. See [INTEGRATIONS.md](plans/INTEGRATIONS.md).
+  others can be added without touching the core.
 
 ## Tech stack
 
 | Layer | Choice |
 |-------|--------|
 | Shell | Tauri v2 (Rust backend) |
-| Frontend | Lit + CodeMirror, TypeScript, Vite (matches Phoneme) |
+| Frontend | Lit, TypeScript, Vite (matches Phoneme) |
 | Styling | Lit scoped CSS (matches Phoneme) |
 | Player | YouTube IFrame Player API |
-| Storage | SQLite via `sqlx`, FTS5 — reuses Phoneme's catalog layer |
+| Storage | SQLite via `sqlx`, FTS5 |
 | State | Lit reactive stores |
 
 ## Honest constraints

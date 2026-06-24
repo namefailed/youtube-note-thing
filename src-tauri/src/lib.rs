@@ -323,7 +323,7 @@ fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
 /// `tokio::net::windows::named_pipe` with no Unix-socket transport — so there is
 /// no stable Unix path to dial. Rather than silently no-op off Windows, the
 /// pipe-only features (transcript versions) return `Err(None)` here so callers
-/// surface a clear "not available on this OS yet" notice. See plans/PHONEME_ASKS.md.
+/// surface a clear "not available on this OS yet" notice.
 #[cfg(windows)]
 fn phoneme_pipe_path() -> Option<String> {
     Some(r"\\.\pipe\phoneme-daemon".to_string())

@@ -1,6 +1,6 @@
 // Thin wrapper over the YouTube IFrame Player API.
 // currentTime is a PLAIN field (the "ref"): polled ~4x/s, never reactive state,
-// so the 250ms tick can't trigger component re-renders. See plans/ARCHITECTURE.md.
+// so the 250ms tick can't trigger component re-renders.
 
 declare global {
   interface Window {

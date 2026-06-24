@@ -1,5 +1,4 @@
 // Pure helpers: URL parsing, time formatting, capture offset, timestamp links.
-// TODO: re-add unit coverage as a vitest test (see plans/TESTING_STRATEGY.md).
 
 // A video's link to an external backend. Stored in videos.ext_ref as JSON
 // ({"integration":"phoneme","ref":"<id>"}) so a second backend can coexist and
