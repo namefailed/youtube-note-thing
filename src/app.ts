@@ -108,6 +108,7 @@ export class App extends LitElement {
   @state() private cmpRight = 0;
   private pollTimer = 0;
   @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
+  @state() private listOpen = localStorage.getItem("ytnt.list") !== "0";
 
   private player: Player | null = null;
   private lastSaved = 0;
@@ -616,8 +617,22 @@ export class App extends LitElement {
     this.sidebarOpen = !this.sidebarOpen;
     localStorage.setItem("ytnt.sidebar", this.sidebarOpen ? "1" : "0");
   }
+  private toggleList() {
+    this.listOpen = !this.listOpen;
+    localStorage.setItem("ytnt.list", this.listOpen ? "1" : "0");
+  }
+  /** "Fullscreen the video panel": collapse both side columns, or restore them. */
+  private toggleFocus() {
+    const focused = !this.sidebarOpen && !this.listOpen;
+    this.sidebarOpen = focused; this.listOpen = focused;
+    localStorage.setItem("ytnt.sidebar", this.sidebarOpen ? "1" : "0");
+    localStorage.setItem("ytnt.list", this.listOpen ? "1" : "0");
+  }
   private toggleFold(k: string) { this.folds = { ...this.folds, [k]: !this.folds[k] }; }
-  updated() { this.toggleAttribute("collapsed", !this.sidebarOpen); }
+  updated() {
+    this.toggleAttribute("collapsed", !this.sidebarOpen);
+    this.toggleAttribute("nolist", !this.listOpen);
+  }
   private allTags(): string[] {
     return [...new Set(this.videos.flatMap((v) => v.tags))].sort((a, b) => a.localeCompare(b));
   }
@@ -647,6 +662,19 @@ export class App extends LitElement {
     vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
     const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen;
     return html`
+      <header class="appbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
+        <button class="ham" title="Toggle filters" aria-label="Toggle filters" @click=${() => this.toggleSidebar()}>${I.menu}</button>
+        <button class="ham ${this.listOpen ? "" : "off"}" title="Toggle library list" aria-label="Toggle library" @click=${() => this.toggleList()}>${I.list}</button>
+        <input id="url" type="text" placeholder="Paste a YouTube video or playlist link…" autocomplete="off"
+          @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
+        <button class="primary" @click=${() => this.addFromInput()}>Load</button>
+        <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
+        <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
+        <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
+        <span class="grow"></span>
+        <button class="ham" title="Fullscreen the video panel" aria-label="Fullscreen the video panel" @click=${() => this.toggleFocus()}>${I.expand}</button>
+      </header>
+
       <aside ?inert=${trapped}>
         <div class="section">
           <div class="sec-head-row">
@@ -709,15 +737,6 @@ export class App extends LitElement {
       </aside>
 
       <section class="list" ?inert=${trapped}>
-        <div class="list-head" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
-          <button class="ham" title="Toggle filters" aria-label="Toggle filters" @click=${() => this.toggleSidebar()}>${I.menu}</button>
-          <input id="url" type="text" placeholder="Paste a YouTube video or playlist link…" autocomplete="off"
-            @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
-          <button class="primary" @click=${() => this.addFromInput()}>Load</button>
-          <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
-          <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
-          <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
-        </div>
         <div class="lib">
           ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v) => html`
             <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
@@ -1119,12 +1138,14 @@ export class App extends LitElement {
       --tint: color-mix(in srgb, var(--accent) 15%, transparent);
       --hover: color-mix(in srgb, var(--fg-default) 8%, transparent);
       --ui-motion: 200ms; --ui-motion-fast: 120ms;
-      display:grid; grid-template-columns:220px 340px 1fr; grid-template-rows:minmax(0,1fr);
+      display:grid; grid-template-columns:220px 340px 1fr; grid-template-rows:44px minmax(0,1fr);
       height:100vh; background:var(--bg-deep); color:var(--fg-default);
       font:13.5px/1.55 "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
       -webkit-font-smoothing:antialiased;
     }
     :host([collapsed]) { grid-template-columns:0 340px 1fr; }
+    :host([nolist]) { grid-template-columns:220px 0 1fr; }
+    :host([collapsed][nolist]) { grid-template-columns:0 0 1fr; }
     .hidden { display:none !important; }
     .tb-left { display:flex; align-items:center; }
     @media (prefers-reduced-motion: reduce) { :host { --ui-motion: 0ms; --ui-motion-fast: 0ms; } }
@@ -1146,9 +1167,10 @@ export class App extends LitElement {
     .tb-btn:hover { background:var(--hover); color:var(--fg-default); }
     .tb-btn.close:hover { background:var(--err); color:var(--bg-deep); }
 
-    aside { background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-height:0; overflow-y:auto; padding-top:6px; }
-    .list { display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg-deep); border-right:1px solid var(--border-subtle); }
-    .list-head { flex:0 0 auto; padding:12px 12px 10px; border-bottom:1px solid var(--border-subtle); }
+    aside { grid-column:1; grid-row:2; background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-height:0; overflow-y:auto; padding-top:6px; }
+    .list { grid-column:2; grid-row:2; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg-deep); border-right:1px solid var(--border-subtle); }
+    .appbar { grid-column:1/-1; grid-row:1; padding:0 12px; background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); }
+    .appbar .ham.off { opacity:.45; }
     .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); padding:14px 16px 6px; }
     .lib { flex:1; min-height:0; overflow:auto; padding:6px 8px 8px; display:flex; flex-direction:column; gap:2px; }
     .detail-empty { color:var(--fg-muted); }
@@ -1253,18 +1275,18 @@ export class App extends LitElement {
     input[type=number] { width:60px; text-align:center; }
     input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
 
-    main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; overflow-y:auto; }
-    .list-head { display:flex; gap:8px; align-items:center; }
-    .list-head input { flex:1; }
+    main { grid-column:3; grid-row:2; display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; overflow-y:auto; }
+    .appbar { display:flex; gap:8px; align-items:center; }
+    .appbar input { flex:1; }
     .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; }
     .ham:hover { background:var(--hover); color:var(--fg-default); }
     .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:12px; transition:background var(--ui-motion-fast); }
     .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
-    .list-head input, .list-head .ghost, .list-head .primary, .np-actions .ghost { height:32px; box-sizing:border-box; border-radius:6px; }
-    .list-head input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
-    .list-head input:focus-visible { outline:none; border-color:var(--kbd-cursor, var(--accent)); }
-    .list-head .ghost, .np-actions .ghost { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); background:var(--bg-elevated); color:var(--fg-muted); padding:0 10px; }
-    .list-head .ghost:hover, .np-actions .ghost:hover { border-color:var(--accent); color:var(--fg-default); background:var(--border-subtle); }
+    .appbar input, .appbar .ghost, .appbar .primary, .np-actions .ghost { height:32px; box-sizing:border-box; border-radius:6px; }
+    .appbar input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
+    .appbar input:focus-visible { outline:none; border-color:var(--kbd-cursor, var(--accent)); }
+    .appbar .ghost, .np-actions .ghost { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); background:var(--bg-elevated); color:var(--fg-muted); padding:0 10px; }
+    .appbar .ghost:hover, .np-actions .ghost:hover { border-color:var(--accent); color:var(--fg-default); background:var(--border-subtle); }
     .nowplaying { display:flex; align-items:center; gap:12px; }
     .np-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
     .np-main { flex:1; min-width:0; }
