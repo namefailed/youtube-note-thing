@@ -823,6 +823,12 @@ export class App extends LitElement {
   private async removeFromPlaylist(it: PlaylistItem) {
     const pl = this.plFilter;
     if (!pl) return;
+    let ok = true;
+    try {
+      ok = await confirmDialog(`Remove “${it.title}” from “${pl.title}”? It stays in your library.`,
+        { title: "Remove from playlist?", kind: "warning" });
+    } catch { /* dialog unavailable — honor the click */ }
+    if (!ok) return;
     try {
       await api.googleRemovePlaylistItem(this.settings.gClientId, this.settings.gClientSecret, pl.id, it.video_id, it.item_id);
       this.plItems = this.plItems.filter((x) => x.item_id !== it.item_id);
@@ -902,6 +908,15 @@ export class App extends LitElement {
       localStorage.setItem("ytnt.tagColors", JSON.stringify(this.localTagColors));
     }
     if (this.tagFilter === oldName) this.tagFilter = next;
+    // If Phoneme knows this tag, rename it globally there too (same id + all
+    // attachments) instead of letting reconcile detach the old + attach the new,
+    // which would orphan the old tag in Phoneme's catalog.
+    if (this.settings.syncTags && this.phonemeOk) {
+      try {
+        const t = (await api.phonemeTags()).find((x) => x.name.toLowerCase() === ok);
+        if (t) await api.phonemeUpdateTag(t.id, next, this.tagColorOf(next) ?? t.color);
+      } catch { /* leave it — next reconcile converges */ }
+    }
     await this.refreshVideos();
     this.flash("Tag renamed", "ok");
   }

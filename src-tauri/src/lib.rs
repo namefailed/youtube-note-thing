@@ -248,6 +248,21 @@ fn phoneme_apply_tags(
     Ok(())
 }
 
+/// Rename (and optionally recolor) a Phoneme catalog tag globally — keeps its id
+/// and every attachment, so renaming from ytnt doesn't orphan the old tag.
+#[tauri::command]
+fn phoneme_update_tag(id: i64, name: String, color: Option<String>) -> Result<(), String> {
+    let id = id.to_string();
+    let mut args = vec!["tag", "update", id.as_str(), name.as_str()];
+    if let Some(c) = color.as_deref() {
+        if !c.is_empty() {
+            args.push("--color");
+            args.push(c);
+        }
+    }
+    run_phoneme(&args).map(|_| ())
+}
+
 /// Is the Phoneme CLI present and its daemon reachable?
 #[tauri::command]
 fn phoneme_available() -> bool {
@@ -1315,6 +1330,7 @@ pub fn run() {
             phoneme_tags,
             phoneme_tags_for,
             phoneme_apply_tags,
+            phoneme_update_tag,
             set_phoneme_bin,
             phoneme_import,
             phoneme_segments,
