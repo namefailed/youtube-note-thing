@@ -471,18 +471,30 @@ fn parse_versions(arr: &[serde_json::Value]) -> Vec<TranscriptVersion> {
 }
 
 /// Every transcript in the compounding chain (raw ASR → each pipeline step → live)
-/// for side-by-side comparison. Prefers phoneme-rest's `GET /api/recordings/:id/
-/// versions` (cross-platform) and falls back to the daemon pipe (Windows-only).
+/// for side-by-side comparison. Prefers the `phoneme --json versions` CLI (always
+/// available + cross-platform), then phoneme-rest (`GET /api/recordings/:id/
+/// versions`), then the daemon named pipe (Windows-only) as a last resort.
 #[tauri::command]
 async fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> {
-    // REST first — works on any OS when phoneme-rest is enabled.
+    // CLI first — needs no opt-in REST and no OS-specific pipe.
+    let cli_id = id.clone();
+    if let Ok(Ok(out)) =
+        tauri::async_runtime::spawn_blocking(move || run_phoneme(&["--json", "versions", &cli_id])).await
+    {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(out.trim()) {
+            if let Some(arr) = v.as_array() {
+                return Ok(parse_versions(arr));
+            }
+        }
+    }
+    // Then phoneme-rest (cross-platform when enabled).
     if let Ok(v) = phoneme_rest_get(&format!("/api/recordings/{id}/versions")).await {
         if let Some(arr) = v.as_array() {
             return Ok(parse_versions(arr));
         }
     }
-    // Fall back to the named pipe (Windows). Off-Windows with REST off this
-    // returns the "only on Windows for now" notice from phoneme_pipe_path().
+    // Last resort: the daemon named pipe. Off-Windows with REST off + the CLI
+    // unavailable, this returns the "only on Windows for now" notice.
     let val = phoneme_ipc(serde_json::json!({ "type": "list_transcript_versions", "id": id }))?;
     let arr = val.as_array().cloned().unwrap_or_default();
     Ok(parse_versions(&arr))

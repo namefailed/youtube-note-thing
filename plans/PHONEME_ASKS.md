@@ -2,70 +2,44 @@
 
 Things ytnt (youtube-note-thing) would benefit from Phoneme exposing. ytnt is a
 thin, best-effort client: it works fully with no Phoneme installed and every
-Phoneme call degrades gracefully. These asks would let ytnt drop CLI spawns,
-work cross-platform, and check compatibility without guessing.
+Phoneme call degrades gracefully.
 
-Contracts referenced below were verified against the Phoneme source on
-2026-06-23 (versions/line numbers may drift).
+**Status:** most asks were resolved in Phoneme commit `e8dbd56d`
+*("integration surfaces for companion apps — versions REST+CLI, clip REST,
+contract doc")*. Remaining items were deferred by Phoneme on purpose. Verified
+against Phoneme source 2026-06-23.
 
-## 1. `POST /api/import {url}` on phoneme-rest
+## ✅ Resolved
 
-Import is **CLI-only** today (`phoneme import <url>`, args.rs `ImportArgs`;
-`phoneme-ipc::Request::ImportRecording` only takes a local `path`, not a URL —
-the yt-dlp download lives in the CLI's `commands/import.rs`). ytnt has to spawn
-the `phoneme` binary to hand over a YouTube URL.
+- **Transcript versions, cross-platform.** Was named-pipe-only (Windows). Now:
+  - CLI `phoneme versions <id>` (+ `--json`) — `bin/phoneme/src/commands/versions.rs`.
+  - REST `GET /api/recordings/:id/versions` — `server.rs:132`.
+  ytnt now resolves versions **CLI-first → REST → pipe** (`phoneme_versions` in
+  `src-tauri/src/lib.rs`), so the Compare view works on macOS/Linux too — the
+  Windows-only pipe is just a last resort.
+- **Audio clip export over REST.** `POST /api/recordings/:id/clip`
+  `{start_ms,end_ms[,out_path]}` → `{path}` — `server.rs:133`. (Not yet surfaced
+  in ytnt — see "Open / not yet wired".)
+- **Versioned contract + compat signal.** `GET /api/status` reports the daemon
+  `version`; the full CLI/REST/pipe contract is documented in
+  `docs/dev/integration-api.md`. ytnt's probe checks `phoneme version`.
 
-Ask: a REST route (and/or an IPC `Request` variant) that takes an http(s) URL
-and runs the same yt-dlp download + enqueue the CLI does, returning the new
-recording id. Then ytnt could drop its CLI spawn for the import path entirely.
+## ⏸ Deferred by Phoneme (intentional — tracked in its integration-api doc)
 
-## 2. Cross-platform reach for the pipe-only features (the real blocker)
+- **`POST /api/import {url}`** — import stays CLI-only because the yt-dlp pipeline
+  lives in the CLI and `phoneme import <url>` already works cross-platform. ytnt
+  keeps its one CLI spawn for import; no blocker.
+- **RAG Ask over REST (streaming)** — `Ask` / `AskActivity` remain pipe-only
+  (CLI `phoneme ask` streams over the pipe). So an in-app Ask/Q&A feature would be
+  Windows-only today; ytnt leaves it unbuilt until a REST/SSE Ask endpoint exists.
 
-Phoneme's IPC is **Windows named-pipe only**: `crates/phoneme-ipc/src/named_pipe.rs`
-uses `tokio::net::windows::named_pipe`, and `pipe_path()` returns
-`\\.\pipe\<name>` (default name `phoneme-daemon`, config.rs:3967). There is no
-Unix-domain-socket transport, so on macOS/Linux ytnt literally cannot dial the
-daemon.
+## Open / not yet wired in ytnt (no Phoneme change needed)
 
-These features live **only** on the pipe (no CLI, no REST), so they are
-Windows-only in ytnt today:
+- **Clip** — the REST route exists; ytnt could add a "clip this range" action
+  (cross-platform) whenever we want it. Not built yet (avoid dead UI).
 
-- `ListTranscriptVersions { id }` — the compare-versions chain (schema.rs ~378).
-- `Ask { … }` / `AskActivity` stream — RAG Q&A (CLI `phoneme ask` exists but
-  streams over the pipe; no REST route in request_map.rs).
-- `ExportClip { id, start_ms, end_ms, out_path? }` — audio clip export
-  (schema.rs ~450; CLI `phoneme clip` exists, no REST route).
+## Already fine (no ask)
 
-Asks, any of which unblocks ytnt off-Windows:
-- REST routes for `GET /api/recordings/:id/versions`, an Ask endpoint (SSE for
-  the streamed answer + sources), and `POST /api/recordings/:id/clip`.
-- and/or a Unix-domain-socket transport in `phoneme-ipc` with a documented,
-  stable socket path (e.g. `$XDG_RUNTIME_DIR/phoneme-daemon.sock`).
-
-Until then ytnt branches on OS (`phoneme_pipe_path()` in src-tauri/src/lib.rs)
-and shows a clear "only on Windows for now" notice instead of a silent no-op.
-
-## 3. A documented, versioned contract + compat signal
-
-ytnt parses `--json` CLI output and a couple of REST/pipe shapes. To detect a
-drifted/old contract it currently shells `phoneme version` (main.rs:67 prints
-`phoneme X.Y.Z`) and compares against a hardcoded minimum.
-
-Asks:
-- A documented, versioned `--json` / REST contract (semver or a contract
-  integer) ytnt can pin against.
-- A `version` field on `GET /api/status` (the IPC `DaemonStatus` Ok already
-  carries `version` — schema.rs ~1317; the `Handshake` request also returns
-  `{protocol_version, app_version, compatible}` — schema.rs ~1344). Surfacing
-  `version` over REST `/api/status` would let the REST-only (cross-platform)
-  path do the same compat check the CLI path does.
-
-## Notes / non-asks (already fine)
-
-- Chapters: `GET /api/recordings/:id/chapters` → `GetChapters` (request_map.rs:90)
-  and CLI `phoneme --json chapters <id> --show` both work read-only. ytnt uses
-  the CLI `--show` form so it never triggers LLM generation.
-- Segments: `phoneme --json show <id> --segments` and
-  `GET /api/recordings/:id/segments` both fine.
-- Live events: `GET /api/events` SSE (sse.rs) mirrors the pipe `SubscribeEvents`
-  stream — ytnt can use it for live pipeline progress where phoneme-rest is up.
+- Chapters: `GET /api/recordings/:id/chapters` + CLI `phoneme --json chapters <id> --show`.
+- Segments: `phoneme --json show <id> --segments` + `GET /api/recordings/:id/segments`.
+- Live events: `GET /api/events` SSE mirrors the pipe `SubscribeEvents` stream.
