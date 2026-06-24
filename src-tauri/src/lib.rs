@@ -316,14 +316,34 @@ fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
     Ok(hits)
 }
 
+/// OS-branched path to Phoneme's daemon IPC endpoint (default name
+/// `phoneme-daemon`). On Windows this is the named pipe `\\.\pipe\phoneme-daemon`.
+///
+/// Phoneme's IPC is **Windows-named-pipe only** today — `phoneme-ipc` uses
+/// `tokio::net::windows::named_pipe` with no Unix-socket transport — so there is
+/// no stable Unix path to dial. Rather than silently no-op off Windows, the
+/// pipe-only features (transcript versions) return `Err(None)` here so callers
+/// surface a clear "not available on this OS yet" notice. See plans/PHONEME_ASKS.md.
+#[cfg(windows)]
+fn phoneme_pipe_path() -> Option<String> {
+    Some(r"\\.\pipe\phoneme-daemon".to_string())
+}
+#[cfg(not(windows))]
+fn phoneme_pipe_path() -> Option<String> {
+    None
+}
+
 // Phoneme's daemon named pipe (NDJSON). The full transcript-version chain is only
 // exposed here — not via the CLI or REST — so we talk to it directly for variants.
 fn phoneme_ipc(req: serde_json::Value) -> Result<serde_json::Value, String> {
     use std::io::{BufRead, BufReader, Write};
+    let path = phoneme_pipe_path().ok_or_else(|| {
+        "This feature needs Phoneme's daemon pipe, which is only available on Windows for now.".to_string()
+    })?;
     let mut pipe = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(r"\\.\pipe\phoneme-daemon")
+        .open(&path)
         .map_err(|e| format!("Phoneme daemon not reachable ({e})"))?;
     let line = serde_json::to_string(&req).map_err(err)? + "\n";
     pipe.write_all(line.as_bytes()).map_err(err)?;

@@ -107,6 +107,7 @@ export class App extends LitElement {
   @state() private transcriptBusy = false;
   @state() private phonemeRec: PhonemeRec | null = null;
   @state() private phonemeVersions: TranscriptVersion[] = [];
+  @state() private versionsError = "";
   @state() private chapters: Chapter[] = [];
   @state() private transcriptView: "transcript" | "chapters" | "compare" | "summary" = "transcript";
   @state() private cmpLeft = 0;
@@ -249,7 +250,7 @@ export class App extends LitElement {
     this.currentId = id;
     this.editing = null; this.filter = ""; this.dur = 0; this.lastSaved = 0; this.selectedId = null;
     this.view = "notes"; this.segments = [];
-    this.phonemeRec = null; this.phonemeVersions = []; this.chapters = []; this.transcriptView = "transcript"; clearTimeout(this.pollTimer);
+    this.phonemeRec = null; this.phonemeVersions = []; this.versionsError = ""; this.chapters = []; this.transcriptView = "transcript"; clearTimeout(this.pollTimer);
     await api.upsertVideo(id, url ?? `https://youtu.be/${id}`);
     await this.refreshVideos();
     this.player?.load(id, this.current?.last_pos_secs ?? 0);
@@ -490,8 +491,9 @@ export class App extends LitElement {
       try { this.segments = await api.phonemeSegments(rec); } catch { /* may have no timing */ }
       try {
         this.phonemeVersions = await api.phonemeVersions(rec);
+        this.versionsError = "";
         this.cmpLeft = 0; this.cmpRight = Math.max(0, this.phonemeVersions.length - 1);
-      } catch { this.phonemeVersions = []; }
+      } catch (e) { this.phonemeVersions = []; this.versionsError = String(e); }
       try { this.chapters = await api.phonemeChapters(rec); } catch { this.chapters = []; }
     } else {
       clearTimeout(this.pollTimer);
@@ -1122,7 +1124,9 @@ export class App extends LitElement {
   }
   private renderCompare() {
     const vs = this.phonemeVersions;
-    if (vs.length < 1) return html`<div class="empty">No alternate versions — this recording ran a plain transcribe with no extra pipeline steps.</div>`;
+    if (vs.length < 1) return html`<div class="empty">${this.versionsError
+      ? this.versionsError
+      : "No alternate versions — this recording ran a plain transcribe with no extra pipeline steps."}</div>`;
     const picker = (val: number, on: (i: number) => void) => html`<select @change=${(e: Event) => on(+(e.target as HTMLSelectElement).value)}>
       ${vs.map((v, i) => html`<option value=${i} ?selected=${i === val}>${v.label}${v.model ? ` · ${v.model}` : ""}</option>`)}
     </select>`;
