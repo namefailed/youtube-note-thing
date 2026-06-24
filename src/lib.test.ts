@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseVideoId, parsePlaylistId, formatTime, applyOffset, tsLink, notesToMarkdown } from "./lib";
+import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, tsLink, notesToMarkdown } from "./lib";
 
 const ID = "dQw4w9WgXcQ";
 
@@ -32,6 +32,22 @@ describe("parseVideoId", () => {
     expect(parseVideoId("https://vimeo.com/12345")).toBeNull();
     expect(parseVideoId("not a url")).toBeNull();
     expect(parseVideoId("")).toBeNull();
+  });
+});
+
+describe("parseRef / serializeRef", () => {
+  it("round-trips the structured form", () => {
+    const s = serializeRef("20260519T143500042");
+    expect(JSON.parse(s)).toEqual({ integration: "phoneme", ref: "20260519T143500042" });
+    expect(parseRef(s)).toEqual({ integration: "phoneme", ref: "20260519T143500042" });
+  });
+  it("reads a legacy bare recording id as a phoneme ref", () => {
+    expect(parseRef("20260519T143500042")).toEqual({ integration: "phoneme", ref: "20260519T143500042" });
+  });
+  it("returns null for empty / missing", () => {
+    expect(parseRef(null)).toBeNull();
+    expect(parseRef("")).toBeNull();
+    expect(parseRef(undefined)).toBeNull();
   });
 });
 

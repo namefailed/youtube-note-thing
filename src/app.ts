@@ -3,7 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion, type PhonemeProbe } from "./api";
 import { Player } from "./player";
-import { parseVideoId, parsePlaylistId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
+import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -369,7 +369,7 @@ export class App extends LitElement {
     else this.phonemeHits = [];
   }
   private openPhonemeHit(h: PhonemeHit) {
-    const vid = this.videos.find((v) => v.ext_ref === h.id)?.id;
+    const vid = this.videos.find((v) => parseRef(v.ext_ref)?.ref === h.id)?.id;
     if (vid) { this.closeModal(); this.loadVideo(vid); }
     else this.flash("That Phoneme recording isn't linked to a video here.");
   }
@@ -445,10 +445,13 @@ export class App extends LitElement {
   }
 
   // ── Phoneme integration (optional) ──────────────────────────────────────
-  private recId(): string | null { return this.current?.ext_ref ?? null; }
+  private recId(): string | null {
+    const r = parseRef(this.current?.ext_ref);
+    return r && r.integration === "phoneme" ? r.ref : null;
+  }
   private async setRecId(rec: string) {
     if (!this.currentId) return;
-    await api.setExtRef(this.currentId, rec);
+    await api.setExtRef(this.currentId, serializeRef(rec));
     await this.refreshVideos();
   }
   /** Drop a video's link to a Phoneme recording that no longer exists. */

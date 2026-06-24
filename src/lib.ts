@@ -1,6 +1,24 @@
 // Pure helpers: URL parsing, time formatting, capture offset, timestamp links.
 // TODO: re-add unit coverage as a vitest test (see plans/TESTING_STRATEGY.md).
 
+// A video's link to an external backend. Stored in videos.ext_ref as JSON
+// ({"integration":"phoneme","ref":"<id>"}) so a second backend can coexist and
+// the link is self-describing. Legacy rows hold a bare recording id string.
+export interface ExtRef { integration: string; ref: string; }
+export function parseRef(extRef: string | null | undefined): ExtRef | null {
+  if (!extRef) return null;
+  try {
+    const o = JSON.parse(extRef) as { integration?: unknown; ref?: unknown };
+    if (o && typeof o === "object" && typeof o.ref === "string" && o.ref) {
+      return { integration: typeof o.integration === "string" ? o.integration : "phoneme", ref: o.ref };
+    }
+  } catch { /* not JSON — fall through to the legacy bare-string form */ }
+  return { integration: "phoneme", ref: extRef };
+}
+export function serializeRef(ref: string, integration = "phoneme"): string {
+  return JSON.stringify({ integration, ref });
+}
+
 export function parsePlaylistId(input: string): string | null {
   if (!input) return null;
   const m = String(input).match(/[?&]list=([A-Za-z0-9_-]+)/);
