@@ -1,7 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, tsLink, notesToMarkdown } from "./lib";
+import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, tsLink, notesToMarkdown, safeTagColor, tagInk } from "./lib";
 
 const ID = "dQw4w9WgXcQ";
+
+describe("tag colors", () => {
+  it("only lets a real hex through, else falls back", () => {
+    expect(safeTagColor("#cba6f7")).toBe("#cba6f7");
+    expect(safeTagColor("#abc")).toBe("#abc");
+    expect(safeTagColor("red; background:url(x)")).toBe("var(--accent)");
+    expect(safeTagColor(null, "#000")).toBe("#000");
+  });
+  it("picks dark ink on light tags and white on dark", () => {
+    expect(tagInk("#ffffff")).toBe("#11111b");
+    expect(tagInk("#000000")).toBe("#ffffff");
+    expect(tagInk("#cba6f7")).toBe("#11111b"); // mauve is light
+    expect(tagInk("notahex")).toBe("");
+  });
+});
 
 describe("parsePlaylistId", () => {
   it("pulls the list id from playlist + watch URLs", () => {

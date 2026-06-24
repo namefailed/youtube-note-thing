@@ -195,6 +195,24 @@ fn run_phoneme(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PhonemeTag {
+    id: i64,
+    name: String,
+    color: Option<String>,
+}
+
+/// Phoneme's whole tag vocabulary with colors (`--all` includes orphans), so
+/// ytnt can paint tag chips the same color Phoneme does — the two stay in sync
+/// on a shared tag. Empty when the daemon is down or Phoneme isn't installed.
+#[tauri::command]
+fn phoneme_tags() -> Vec<PhonemeTag> {
+    let Ok(out) = run_phoneme(&["--json", "tag", "list", "--all"]) else {
+        return vec![];
+    };
+    serde_json::from_str(&out).unwrap_or_default()
+}
+
 /// Is the Phoneme CLI present and its daemon reachable?
 #[tauri::command]
 fn phoneme_available() -> bool {
@@ -1170,6 +1188,7 @@ pub fn run() {
             save_markdown,
             phoneme_available,
             phoneme_probe,
+            phoneme_tags,
             set_phoneme_bin,
             phoneme_import,
             phoneme_segments,

@@ -3,7 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion, type PhonemeProbe } from "./api";
 import { Player } from "./player";
-import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
+import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -98,6 +98,13 @@ export class App extends LitElement {
   @state() private plItems: PlaylistItem[] = [];
   @state() private plLoading = false;
   @state() private phonemeOk = false;
+  // Tag colors: pulled from Phoneme (the authority) so a shared tag looks the
+  // same in both apps; local picks (localStorage) win and cover ytnt-only tags.
+  @state() private phonemeTagColors: Record<string, string> = {};
+  private localTagColors: Record<string, string> = (() => {
+    try { return JSON.parse(localStorage.getItem("ytnt.tagColors") || "{}"); } catch { return {}; }
+  })();
+  private prevDaemonOk = false;
   @state() private phonemePresent = false;
   @state() private phonemeCompatible = true;
   @state() private phonemeVersion = "";
@@ -188,9 +195,38 @@ export class App extends LitElement {
       this.phonemePresent = p.present;
       this.phonemeCompatible = p.compatible;
       this.phonemeVersion = p.version;
+      // Pull Phoneme's tag colors when the daemon (re)appears.
+      if (p.daemon_ok && !this.prevDaemonOk) this.refreshTagColors();
+      this.prevDaemonOk = p.daemon_ok;
     } catch {
-      this.phonemeOk = false; this.phonemePresent = false;
+      this.phonemeOk = false; this.phonemePresent = false; this.prevDaemonOk = false;
     }
+  }
+
+  private async refreshTagColors() {
+    try {
+      const tags = await api.phonemeTags();
+      const m: Record<string, string> = {};
+      for (const t of tags) if (t.color && /^#[0-9a-fA-F]{3,8}$/.test(t.color)) m[t.name.toLowerCase()] = t.color;
+      this.phonemeTagColors = m;
+    } catch { /* daemon down — keep whatever colors we already have */ }
+  }
+
+  /** Resolved color for a tag, or null (caller uses the theme default tint). */
+  private tagColorOf(name: string): string | null {
+    const k = name.toLowerCase();
+    return this.localTagColors[k] ?? this.phonemeTagColors[k] ?? null;
+  }
+  /** Inline style for a colored chip; "" when the tag has no color (CSS tint). */
+  private chipStyle(name: string): string {
+    const c = this.tagColorOf(name);
+    return c ? `--tag-color:${safeTagColor(c)};color:${tagInk(c)}` : "";
+  }
+  private dotColor(name: string): string { return safeTagColor(this.tagColorOf(name)); }
+  private setTagColor(name: string, hex: string) {
+    this.localTagColors = { ...this.localTagColors, [name.toLowerCase()]: hex };
+    localStorage.setItem("ytnt.tagColors", JSON.stringify(this.localTagColors));
+    this.requestUpdate();
   }
 
   firstUpdated() {
@@ -781,7 +817,7 @@ export class App extends LitElement {
             ${tags.map((t) => html`
             <button class="sidebar-item ${this.tagFilter === t ? "on" : ""}"
               @click=${() => { this.plFilter = null; this.libView = "all"; this.tagFilter = this.tagFilter === t ? null : t; }}>
-              <span class="si-icon tag-hash">#</span><span class="si-label">${t}</span>
+              <span class="si-icon"><span class="tag-dot" style="background:${this.dotColor(t)}"></span></span><span class="si-label">${t}</span>
               <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
             </button>`)}` : nothing}
         </div>` : nothing}
@@ -817,7 +853,7 @@ export class App extends LitElement {
               <div class="meta">
                 <div class="t" title=${v.title || v.id}>${v.title || v.id}</div>
                 <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}${v.ext_ref ? html` · <span class="pill tx">transcript</span>` : nothing}</div>
-                ${v.tags.length ? html`<div class="ctags">${v.tags.map((t) => html`<span class="ctag">${t}</span>`)}</div>` : nothing}
+                ${v.tags.length ? html`<div class="ctags">${v.tags.map((t) => html`<span class="ctag" style="${this.chipStyle(t)}">${t}</span>`)}</div>` : nothing}
               </div>
               <div class="lc-actions">
                 <button class="ghost pin ${v.pinned ? "on" : ""}" title=${v.pinned ? "Unpin" : "Pin to top"} @click=${(e: Event) => { e.stopPropagation(); this.togglePin(v.id, v.pinned); }}>${I.pin}</button>
@@ -865,7 +901,7 @@ export class App extends LitElement {
         </div>
 
         ${this.current ? html`<div class="vtags">
-          ${this.current.tags.map((t) => html`<span class="chip tag">${t}<button class="x" title="Remove tag" aria-label="Remove tag ${t}" @click=${() => this.removeTag(t)}>×</button></span>`)}
+          ${this.current.tags.map((t) => html`<span class="chip tag" style="${this.chipStyle(t)}"><label class="tag-swatch" title="Recolor tag" style="background:${this.dotColor(t)}"><input type="color" .value=${safeTagColor(this.tagColorOf(t), DEFAULT_TAG_COLOR)} @input=${(e: Event) => this.setTagColor(t, (e.target as HTMLInputElement).value)} /></label>${t}<button class="x" title="Remove tag" aria-label="Remove tag ${t}" @click=${() => this.removeTag(t)}>×</button></span>`)}
           <input class="tag-add" type="text" placeholder="+ tag" aria-label="Add tag"
             @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { this.addTag((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ""; } }} />
         </div>` : nothing}
@@ -925,7 +961,7 @@ export class App extends LitElement {
           <details class="menu up">
             <summary class="bulk-btn">🏷 Tag ${I.caret}</summary>
             <div class="menu-pop">
-              ${tags.length ? tags.map((t) => html`<button @click=${(ev: Event) => { this.closeMenu(ev); this.bulkTag(t); }}><span class="bulk-menu-dot"></span>${t}</button>`) : nothing}
+              ${tags.length ? tags.map((t) => html`<button @click=${(ev: Event) => { this.closeMenu(ev); this.bulkTag(t); }}><span class="bulk-menu-dot" style="background:${this.dotColor(t)}"></span>${t}</button>`) : nothing}
               <input class="bulk-newtag" type="text" placeholder="+ new tag…" @click=${(e: Event) => e.stopPropagation()}
                 @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { const v = (e.target as HTMLInputElement).value; (e.target as HTMLInputElement).value = ""; this.closeMenu(e); this.bulkTag(v); } }} />
             </div>
@@ -1289,7 +1325,7 @@ export class App extends LitElement {
     .libcard .c { font-size:11px; color:var(--fg-faded); margin-top:1px; }
     .libcard .tx { color:var(--accent); }
     .ctags { display:flex; flex-wrap:wrap; gap:3px; margin-top:3px; }
-    .ctag { font-size:9.5px; padding:1px 6px; border-radius:999px; background:var(--bg-deep); color:var(--fg-muted); }
+    .ctag { font-size:9.5px; padding:1px 6px; border-radius:999px; background:var(--tag-color, var(--bg-deep)); color:var(--fg-muted); }
     .lc-actions { position:absolute; top:4px; right:4px; display:flex; gap:1px; border-radius:6px; background:color-mix(in srgb, var(--bg-deep) 78%, transparent); backdrop-filter:blur(2px); }
     .libcard .lc-actions .ghost { padding:3px; opacity:.85; }
     .libcard:hover .lc-actions .ghost { opacity:.9; }
@@ -1354,13 +1390,16 @@ export class App extends LitElement {
     .sidebar-item .count { margin-left:auto; flex:0 0 auto; min-width:20px; padding:1px 7px; border-radius:999px; text-align:center; font-size:11px; line-height:15px; font-variant-numeric:tabular-nums; color:var(--fg-faded); background:color-mix(in srgb, var(--fg-faded) 10%, transparent); }
     .sidebar-item.on .count, .sidebar-item:hover .count { color:color-mix(in srgb, var(--accent) 75%, var(--fg-default)); background:color-mix(in srgb, var(--accent) 16%, transparent); }
     .sidebar-item .dot { width:8px; height:8px; border-radius:999px; background:var(--accent); opacity:.85; flex:0 0 auto; }
+    .sidebar-item .tag-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
     .tagbar { display:flex; flex-wrap:wrap; gap:5px; padding:0 12px 8px; }
     .chip { font:inherit; font-size:11.5px; padding:3px 9px; border-radius:999px; cursor:pointer; background:var(--bg-elevated);
       border:1px solid var(--border); color:var(--fg-muted); display:inline-flex; align-items:center; gap:5px; transition:color .12s, border-color .12s; }
     .chip:hover { color:var(--fg-default); }
     .chip.on { background:var(--tint); border-color:var(--accent); color:var(--accent); }
     .vtags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:flex-end; margin-top:-4px; }
-    .chip.tag { color:var(--fg-default); cursor:default; }
+    .chip.tag { color:var(--fg-default); cursor:default; background:var(--tag-color, rgba(203,166,247,0.12)); }
+    .tag-swatch { width:11px; height:11px; border-radius:50%; flex:0 0 auto; position:relative; cursor:pointer; border:1px solid color-mix(in srgb, var(--fg-default) 25%, transparent); }
+    .tag-swatch input { position:absolute; inset:0; width:100%; height:100%; opacity:0; padding:0; border:0; cursor:pointer; }
     .chip .x { background:none; border:none; padding:0; margin:0; color:var(--fg-faded); cursor:pointer; font-size:14px; line-height:1; }
     .chip .x:hover { color:var(--err); }
     .tag-add { width:84px; padding:4px 10px; border-radius:999px; font-size:11.5px; background:var(--bg-deep); }

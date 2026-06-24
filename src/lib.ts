@@ -18,6 +18,30 @@ export function serializeRef(ref: string, integration = "phoneme"): string {
   return JSON.stringify({ integration, ref });
 }
 
+// --- Tags --------------------------------------------------------------------
+// ytnt mirrors Phoneme's tag colors so a tag means/looks the same in both apps.
+// Phoneme stores a free hex per tag (native color picker, default mauve); these
+// helpers are ported 1:1 so the chips render identically.
+
+/** Phoneme's default tag color (catppuccin mauve) — new tags start here. */
+export const DEFAULT_TAG_COLOR = "#cba6f7";
+
+/** A tag color is spliced into inline `style`, so only let a validated hex
+ *  through; anything else falls back. Mirrors Phoneme's `safeTagColor`. */
+export function safeTagColor(color: string | null | undefined, fallback = "var(--accent)"): string {
+  return color && /^#[0-9a-fA-F]{3,8}$/.test(color) ? color : fallback;
+}
+
+/** Black (`#11111b`) or white (`#ffffff`) ink for text on `hex`, by YIQ luma;
+ *  `""` for non-hex input (caller inherits). Mirrors Phoneme's contrast helper. */
+export function tagInk(hex: string): string {
+  if (!hex || !hex.startsWith("#")) return "";
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return "";
+  return (r * 299 + g * 587 + b * 114) / 1000 >= 128 ? "#11111b" : "#ffffff";
+}
+
 export function parsePlaylistId(input: string): string | null {
   if (!input) return null;
   const m = String(input).match(/[?&]list=([A-Za-z0-9_-]+)/);
