@@ -84,6 +84,7 @@ export class App extends LitElement {
   @state() private findReplaceOpen = false;
   @state() private sortDesc = true;
   @state() private selected = new Set<string>();
+  @state() private bulkPos: { x: number; y: number } | null = null;
   @state() private fsNote: { t: number } | null = null;
   @state() private titleEditing = false;
   @state() private googleConnected = false;
@@ -497,6 +498,20 @@ export class App extends LitElement {
     await this.refreshVideos();
     this.flash(`Tagged ${n} video${n > 1 ? "s" : ""} “${t}”`, "ok");
   }
+  private bulkDrag(e: MouseEvent) {
+    e.preventDefault();
+    const bar = (e.currentTarget as HTMLElement).closest(".bulkbar") as HTMLElement | null;
+    const rect = bar?.getBoundingClientRect();
+    const base = this.bulkPos ?? { x: rect?.left ?? 0, y: rect?.top ?? 0 };
+    const sx = e.clientX, sy = e.clientY;
+    const move = (m: MouseEvent) => { this.bulkPos = {
+      x: Math.max(8, Math.min(window.innerWidth - 140, base.x + m.clientX - sx)),
+      y: Math.max(8, Math.min(window.innerHeight - 48, base.y + m.clientY - sy)),
+    }; };
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
   private onPlayerError(code: number) {
     const msg: Record<number, string> = {
       2: "Invalid video URL", 5: "Playback error", 100: "Video not found or removed",
@@ -603,14 +618,6 @@ export class App extends LitElement {
             <button class="sidebar-item" title=${`Import “${p.title}” (${p.count})`} @click=${() => this.importGPlaylist(p)}>
               <span class="si-icon">${I.list}</span><span class="si-label">${p.title}</span><span class="count">${p.count}</span>
             </button>`) : nothing}
-        </div>` : nothing}
-        ${this.selected.size ? html`<div class="bulkbar">
-          <span>${this.selected.size} selected</span>
-          <input class="bulk-tag" type="text" placeholder="+ tag…" title="Add a tag to selected"
-            @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { this.bulkTag((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ""; } }} />
-          <span class="grow"></span>
-          <button class="danger" @click=${() => this.bulkDelete()}>Delete</button>
-          <button class="ghost" @click=${() => (this.selected = new Set())}>Clear</button>
         </div>` : nothing}
         <div class="lib">
           ${vids.length ? vids.map((v) => html`
@@ -733,6 +740,24 @@ export class App extends LitElement {
       ${this.settingsOpen ? this.renderSettings() : nothing}
       ${this.cheatOpen ? this.renderCheat() : nothing}
       ${this.findReplaceOpen ? this.renderFindReplace() : nothing}
+      ${this.selected.size ? html`<div class="bulkbar" style=${this.bulkPos
+          ? `left:${this.bulkPos.x}px; top:${this.bulkPos.y}px;`
+          : `left:50%; bottom:24px; transform:translateX(-50%);`}>
+        <span class="bulk-grip" title="Drag to move" @mousedown=${(e: MouseEvent) => this.bulkDrag(e)}>⠿</span>
+        <span class="bulk-count">${this.selected.size} selected</span>
+        <div class="bulk-actions">
+          <details class="menu up">
+            <summary class="bulk-btn">🏷 Tag ${I.caret}</summary>
+            <div class="menu-pop">
+              ${tags.length ? tags.map((t) => html`<button @click=${(ev: Event) => { this.closeMenu(ev); this.bulkTag(t); }}><span class="bulk-menu-dot"></span>${t}</button>`) : nothing}
+              <input class="bulk-newtag" type="text" placeholder="+ new tag…" @click=${(e: Event) => e.stopPropagation()}
+                @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { const v = (e.target as HTMLInputElement).value; (e.target as HTMLInputElement).value = ""; this.closeMenu(e); this.bulkTag(v); } }} />
+            </div>
+          </details>
+          <button class="bulk-btn bulk-btn--danger" @click=${() => this.bulkDelete()}>🗑 Delete</button>
+          <button class="bulk-btn bulk-btn--muted" @click=${() => (this.selected = new Set())}>✕ Deselect</button>
+        </div>
+      </div>` : nothing}
       ${this.toasts.length ? html`<div class="toasts" role="status" aria-live="polite">
         ${this.toasts.map((t) => html`<div class="toast ${t.kind}"><span class="ti">${t.kind === "ok" ? "✓" : t.kind === "err" ? "✕" : "i"}</span><span>${t.msg}</span></div>`)}
       </div>` : nothing}
@@ -994,9 +1019,23 @@ export class App extends LitElement {
     .lc-check { flex:0 0 auto; width:15px; height:15px; cursor:pointer; opacity:0; transition:opacity var(--ui-motion-fast); }
     .libcard:hover .lc-check, .libcard.sel .lc-check { opacity:1; }
     .libcard.sel { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
-    .bulkbar { display:flex; align-items:center; gap:6px; padding:7px 10px; margin:4px 8px; background:var(--bg-elevated); border:1px solid var(--accent); border-radius:var(--r-sm); font-size:12px; }
-    .bulk-tag { width:78px; padding:3px 8px; font-size:12px; }
-    .bulk-tag:focus { width:120px; }
+    .bulkbar { position:fixed; z-index:60; display:flex; align-items:center; gap:8px; padding:8px 10px 8px 6px; max-width:calc(100vw - 32px); flex-wrap:wrap;
+      background:color-mix(in srgb, var(--bg-elevated) 96%, transparent); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+      border:var(--popup-border, 1px solid var(--border)); border-radius:12px; box-shadow:0 16px 44px rgba(0,0,0,.5); animation:bulk-in var(--ui-motion) ease-out; }
+    @keyframes bulk-in { from { opacity:0; } to { opacity:1; } }
+    .bulk-grip { cursor:move; color:var(--fg-faded); font-size:15px; line-height:1; padding:4px 3px; user-select:none; letter-spacing:-2px; flex:0 0 auto; }
+    .bulk-grip:hover { color:var(--accent); }
+    .bulk-count { font-size:12px; font-weight:600; color:var(--accent); white-space:nowrap; letter-spacing:.02em; }
+    .bulk-actions { display:flex; gap:6px; align-items:center; }
+    .bulk-btn { transition:all var(--ui-motion-fast) ease-out; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:6px; padding:5px 12px; font-size:12px; font-weight:500; color:var(--fg-default); cursor:pointer; white-space:nowrap; display:inline-flex; align-items:center; gap:5px; }
+    .bulk-btn:hover { border-color:var(--accent); color:var(--accent); transform:translateY(-1px); box-shadow:0 2px 8px rgba(0,0,0,.2); }
+    .bulk-btn--danger { color:var(--err); border-color:color-mix(in srgb, var(--err) 30%, transparent); }
+    .bulk-btn--danger:hover { background:color-mix(in srgb, var(--err) 10%, transparent); border-color:var(--err); color:var(--err); }
+    .bulk-btn--muted { color:var(--fg-muted); }
+    .bulk-btn--muted:hover { color:var(--fg-default); border-color:var(--border); }
+    .menu.up .menu-pop { top:auto; bottom:calc(100% + 6px); left:0; right:auto; }
+    .bulk-menu-dot { width:8px; height:8px; border-radius:50%; background:var(--accent); flex:0 0 auto; }
+    .bulk-newtag { margin-top:2px; width:100%; padding:6px 9px; font-size:12px; }
     .danger { background:var(--err); color:var(--bg-deep); border-color:var(--err); }
     .danger:hover { background:color-mix(in srgb, var(--err), black 12%); border-color:color-mix(in srgb, var(--err), black 12%); }
     .pill { padding:1px 7px; border-radius:999px; background:var(--tint); color:var(--accent); font-size:9.5px; }
