@@ -63,7 +63,7 @@ function themeLabel(slug: string): string {
   return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
-interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; }
+interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; }
 type Editing = { id?: string; t: number; draft: string } | null;
 
 @customElement("ytnt-app")
@@ -200,7 +200,8 @@ export class App extends LitElement {
     this.player.onTick = (t, d) => this.onTick(t, d);
     this.player.onTitle = (title) => this.onTitle(title);
     this.player.onError = (code) => this.onPlayerError(code);
-    this.probePhoneme();
+    // Push any saved Phoneme path to the backend before the first probe.
+    api.setPhonemeBin(this.settings.phonemeBin).then(() => this.probePhoneme()).catch(() => this.probePhoneme());
     // Re-probe on a timer so a daemon that starts or dies mid-session flips
     // phonemeOk live (not only at startup).
     this.probeTimer = window.setInterval(() => this.probePhoneme(), 15000);
@@ -534,6 +535,7 @@ export class App extends LitElement {
     localStorage.setItem("ytnt.settings", JSON.stringify(this.settings));
     if (k === "theme") document.documentElement.dataset.theme = String(v);
     if (k === "stripTitlebar") win()?.setDecorations(!v)?.catch(() => {});
+    if (k === "phonemeBin") api.setPhonemeBin(String(v)).then(() => this.probePhoneme()).catch(() => {});
     this.requestUpdate();
   }
   private flash(msg: string, kind: "info" | "ok" | "err" = "info") {
@@ -1038,6 +1040,13 @@ export class App extends LitElement {
             </div></div>
         </section>
         <section class="settings-section">
+          <h3>Phoneme</h3>
+          <label class="field col"><span>Phoneme CLI path</span>
+            <input type="text" placeholder="auto-detect — or e.g. C:\\…\\phoneme.exe" .value=${this.settings.phonemeBin}
+              @input=${(e: Event) => this.setSetting("phonemeBin", (e.target as HTMLInputElement).value)} /></label>
+          <div class="help muted sm">Leave blank to auto-detect (PATH, then a local build). Point it at a stable release build so transcription keeps working while you rebuild Phoneme.</div>
+        </section>
+        <section class="settings-section">
           <h3>YouTube account</h3>
           ${this.googleConnected ? html`
             <div class="field"><span>Connected</span>
@@ -1528,7 +1537,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [] };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "" };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }

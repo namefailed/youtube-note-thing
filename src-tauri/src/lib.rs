@@ -136,7 +136,26 @@ fn on_path(exe: &str) -> bool {
 /// when it isn't on PATH: an explicit `PHONEME_BIN` override wins, then PATH, then
 /// a cargo install, then the usual local dev build. Falls back to bare "phoneme"
 /// so a genuine miss still surfaces as "not found" rather than a bogus path.
+/// Frontend-set override (Settings → Phoneme CLI path); takes priority over PATH
+/// detection. Pushed via [`set_phoneme_bin`] on startup and when the setting changes.
+static PHONEME_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[tauri::command]
+fn set_phoneme_bin(path: String) {
+    let p = path.trim().to_string();
+    if let Ok(mut g) = PHONEME_OVERRIDE.lock() {
+        *g = if p.is_empty() { None } else { Some(p) };
+    }
+}
+
 fn resolve_phoneme() -> String {
+    if let Ok(g) = PHONEME_OVERRIDE.lock() {
+        if let Some(p) = g.as_ref() {
+            if !p.trim().is_empty() {
+                return p.clone();
+            }
+        }
+    }
     if let Ok(p) = std::env::var("PHONEME_BIN") {
         let p = p.trim();
         if !p.is_empty() {
@@ -1151,6 +1170,7 @@ pub fn run() {
             save_markdown,
             phoneme_available,
             phoneme_probe,
+            set_phoneme_bin,
             phoneme_import,
             phoneme_segments,
             phoneme_chapters,

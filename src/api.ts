@@ -56,6 +56,7 @@ export const api = {
   phonemeSearch: (query: string) => invoke<PhonemeHit[]>("phoneme_search", { query }),
   youtubeCaptions: (videoId: string, lang?: string) =>
     invoke<Segment[]>("youtube_captions", { videoId, lang: lang ?? null }),
+  setPhonemeBin: (path: string) => invoke<void>("set_phoneme_bin", { path }),
   phonemeRecording: (id: string) => invoke<PhonemeRec>("phoneme_recording", { id }),
   phonemeVersions: (id: string) => invoke<TranscriptVersion[]>("phoneme_versions", { id }),
   phonemeSseStart: () => invoke<void>("phoneme_sse_start"),
