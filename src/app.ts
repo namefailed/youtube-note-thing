@@ -674,9 +674,7 @@ export class App extends LitElement {
         </div>` : nothing}
         <div class="lib">
           ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v) => html`
-            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""}" @click=${() => this.toggleVideo(v.id, v.url)}>
-              <input class="lc-check" type="checkbox" title="Select" .checked=${this.selected.has(v.id)}
-                @click=${(e: Event) => e.stopPropagation()} @change=${() => this.toggleSelect(v.id)} />
+            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
               <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                 @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
               <div class="meta">
@@ -1065,6 +1063,7 @@ export class App extends LitElement {
       ["+ / −", "Playback speed up / down"],
       ["M / F", "Mute / fullscreen"],
       ["Ctrl+B", "Toggle sidebar"],
+      ["Shift+click", "Select videos (bulk)"],
       ["0–9", "Seek to 0–90%"],
       ["↑ / ↓", "Select previous / next note"],
       ["Enter / Delete", "Edit / delete selected note"],
@@ -1130,13 +1129,11 @@ export class App extends LitElement {
     .ctags { display:flex; flex-wrap:wrap; gap:3px; margin-top:3px; }
     .ctag { font-size:9.5px; padding:1px 6px; border-radius:999px; background:var(--bg-deep); color:var(--fg-muted); }
     .lc-actions { position:absolute; top:4px; right:4px; display:flex; gap:1px; }
-    .libcard .lc-actions .ghost { padding:3px; opacity:0; }
-    .libcard:hover .lc-actions .ghost { opacity:.6; }
-    .libcard .lc-actions .ghost:hover { opacity:1; }
-    .libcard .rm:hover { color:var(--err); }
-    .libcard .pin.on { opacity:.95; color:var(--accent); }
-    .lc-check { flex:0 0 auto; width:15px; height:15px; cursor:pointer; opacity:0; transition:opacity var(--ui-motion-fast); }
-    .libcard:hover .lc-check, .libcard.sel .lc-check { opacity:1; }
+    .libcard .lc-actions .ghost { padding:3px; opacity:.65; }
+    .libcard:hover .lc-actions .ghost { opacity:.9; }
+    .libcard .lc-actions .ghost:hover { opacity:1; background:var(--hover); }
+    .libcard .rm:hover { color:var(--err); background:color-mix(in srgb, var(--err) 14%, transparent); }
+    .libcard .pin.on { opacity:1; color:var(--accent); }
     .libcard.sel { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
     .bulkbar { position:fixed; z-index:60; display:flex; align-items:center; gap:8px; padding:8px 10px 8px 6px; max-width:calc(100vw - 32px); flex-wrap:wrap;
       background:color-mix(in srgb, var(--bg-elevated) 96%, transparent); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
