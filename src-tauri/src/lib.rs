@@ -430,14 +430,28 @@ struct TranscriptVersion {
     text: String,
 }
 
-/// Every transcript in the compounding chain (raw ASR → each pipeline step → live)
-/// for side-by-side comparison. Via the daemon pipe (the only surface that has it).
-#[tauri::command]
-fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> {
-    let val = phoneme_ipc(serde_json::json!({ "type": "list_transcript_versions", "id": id }))?;
-    let arr = val.as_array().cloned().unwrap_or_default();
-    Ok(arr
-        .iter()
+/// phoneme-rest's default loopback base (it binds 127.0.0.1 only, port 3737,
+/// and is opt-in — disabled until the user enables `[rest_api]`). reqwest sends
+/// no `Origin` header, so it passes phoneme-rest's loopback-Origin guard that
+/// would otherwise reject a webview `fetch`/`EventSource`.
+const PHONEME_REST_BASE: &str = "http://127.0.0.1:3737";
+
+/// Best-effort GET against phoneme-rest, parsed as JSON. `Err` when REST is off /
+/// unreachable / non-2xx — callers fall back to the pipe or degrade.
+async fn phoneme_rest_get(path: &str) -> Result<serde_json::Value, String> {
+    let resp = reqwest::Client::new()
+        .get(format!("{PHONEME_REST_BASE}{path}"))
+        .send()
+        .await
+        .map_err(|e| format!("phoneme-rest not reachable ({e})"))?;
+    if !resp.status().is_success() {
+        return Err(format!("phoneme-rest returned {}", resp.status()));
+    }
+    resp.json().await.map_err(err)
+}
+
+fn parse_versions(arr: &[serde_json::Value]) -> Vec<TranscriptVersion> {
+    arr.iter()
         .map(|v| {
             let idx = v.get("idx").and_then(|x| x.as_i64()).unwrap_or(0);
             let label = v
@@ -453,7 +467,97 @@ fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> {
                 text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             }
         })
-        .collect())
+        .collect()
+}
+
+/// Every transcript in the compounding chain (raw ASR → each pipeline step → live)
+/// for side-by-side comparison. Prefers phoneme-rest's `GET /api/recordings/:id/
+/// versions` (cross-platform) and falls back to the daemon pipe (Windows-only).
+#[tauri::command]
+async fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> {
+    // REST first — works on any OS when phoneme-rest is enabled.
+    if let Ok(v) = phoneme_rest_get(&format!("/api/recordings/{id}/versions")).await {
+        if let Some(arr) = v.as_array() {
+            return Ok(parse_versions(arr));
+        }
+    }
+    // Fall back to the named pipe (Windows). Off-Windows with REST off this
+    // returns the "only on Windows for now" notice from phoneme_pipe_path().
+    let val = phoneme_ipc(serde_json::json!({ "type": "list_transcript_versions", "id": id }))?;
+    let arr = val.as_array().cloned().unwrap_or_default();
+    Ok(parse_versions(&arr))
+}
+
+// ── Live pipeline progress via phoneme-rest SSE (GET /api/events) ──────────────
+// Prefer streamed DaemonEvents over the 4s `show` poll while a transcription is
+// in flight. Best-effort: phoneme-rest is opt-in + loopback-only, so this often
+// isn't reachable — the frontend keeps polling as a fallback when it is not.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Generation counter so a newer `phoneme_sse_start` cancels the previous bridge
+/// task (each task exits once the generation moves past the one it captured).
+static SSE_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Open the phoneme-rest SSE event stream and re-emit each `DaemonEvent` to the
+/// frontend as a Tauri `phoneme-event`. Returns once the stream is confirmed
+/// open (so the frontend can stop polling), then keeps forwarding in the
+/// background until the stream closes or a newer call supersedes it. `Err` when
+/// phoneme-rest isn't reachable — the caller then relies on polling.
+#[tauri::command]
+async fn phoneme_sse_start(app: AppHandle) -> Result<(), String> {
+    use tauri::Emitter;
+    let my_gen = SSE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let resp = reqwest::Client::new()
+        .get(format!("{PHONEME_REST_BASE}/api/events"))
+        .header("Accept", "text/event-stream")
+        .send()
+        .await
+        .map_err(|e| format!("phoneme-rest events not reachable ({e})"))?;
+    if !resp.status().is_success() {
+        return Err(format!("phoneme-rest events returned {}", resp.status()));
+    }
+    // Stream is open. Forward in a background task; the await above already
+    // proved reachability, so the caller can stop its poll.
+    tauri::async_runtime::spawn(async move {
+        let mut resp = resp;
+        let mut buf = String::new();
+        loop {
+            // A newer start (or a stop) superseded this task.
+            if SSE_GEN.load(Ordering::SeqCst) != my_gen {
+                break;
+            }
+            match resp.chunk().await {
+                Ok(Some(bytes)) => {
+                    buf.push_str(&String::from_utf8_lossy(&bytes));
+                    // SSE frames are separated by a blank line; each carries one
+                    // or more `data:` lines. We forward each `data:` payload.
+                    while let Some(pos) = buf.find('\n') {
+                        let line = buf[..pos].trim_end_matches('\r').to_string();
+                        buf.drain(..=pos);
+                        if let Some(data) = line.strip_prefix("data:") {
+                            let data = data.trim();
+                            if data.is_empty() {
+                                continue;
+                            }
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                let _ = app.emit("phoneme-event", v);
+                            }
+                        }
+                    }
+                }
+                Ok(None) => break, // stream closed by the server
+                Err(_) => break,   // network error — frontend falls back to polling
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Stop forwarding SSE events (the in-flight bridge task exits on its next loop).
+#[tauri::command]
+fn phoneme_sse_stop() {
+    SSE_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Best-effort standalone transcript: fetch YouTube's own caption track via the
@@ -1000,6 +1104,8 @@ pub fn run() {
             phoneme_search,
             phoneme_recording,
             phoneme_versions,
+            phoneme_sse_start,
+            phoneme_sse_stop,
             youtube_captions,
             import_youtube_playlist,
             google_status,

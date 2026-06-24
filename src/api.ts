@@ -58,6 +58,8 @@ export const api = {
     invoke<Segment[]>("youtube_captions", { videoId, lang: lang ?? null }),
   phonemeRecording: (id: string) => invoke<PhonemeRec>("phoneme_recording", { id }),
   phonemeVersions: (id: string) => invoke<TranscriptVersion[]>("phoneme_versions", { id }),
+  phonemeSseStart: () => invoke<void>("phoneme_sse_start"),
+  phonemeSseStop: () => invoke<void>("phoneme_sse_stop"),
   importYoutubePlaylist: (playlistId: string) =>
     invoke<number>("import_youtube_playlist", { playlistId }),
   googleStatus: () => invoke<boolean>("google_status"),

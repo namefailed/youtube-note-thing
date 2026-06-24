@@ -6,6 +6,7 @@ import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -113,6 +114,8 @@ export class App extends LitElement {
   @state() private cmpLeft = 0;
   @state() private cmpRight = 0;
   private pollTimer = 0;
+  private sseOn = false;
+  private unlistenPhoneme: (() => void) | null = null;
   @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
   @state() private listOpen = localStorage.getItem("ytnt.list") !== "0";
 
@@ -173,6 +176,8 @@ export class App extends LitElement {
     window.removeEventListener("keydown", this.onKey, true);
     window.removeEventListener("focusin", this.onFocusIn, true);
     clearInterval(this.probeTimer);
+    this.unlistenPhoneme?.();
+    if (this.sseOn) { this.sseOn = false; api.phonemeSseStop().catch(() => {}); }
   }
 
   /** Probe Phoneme's CLI/daemon/version; flips phonemeOk and the compat flags live. */
@@ -199,6 +204,11 @@ export class App extends LitElement {
     // Re-probe on a timer so a daemon that starts or dies mid-session flips
     // phonemeOk live (not only at startup).
     this.probeTimer = window.setInterval(() => this.probePhoneme(), 15000);
+    // Live pipeline progress: phoneme_sse_start bridges phoneme-rest's SSE to a
+    // "phoneme-event" Tauri event; refresh on each while a recording is tracked.
+    // Best-effort — REST is opt-in, so this no-ops and the 4s poll carries on.
+    listen("phoneme-event", () => { if (this.recId()) this.refreshPhoneme(); })
+      .then((un) => (this.unlistenPhoneme = un)).catch(() => {});
     win()?.setDecorations(!this.settings.stripTitlebar)?.catch(() => {});
     api.googleStatus().then((ok) => { this.googleConnected = ok; if (ok) this.loadGPlaylists(); }).catch(() => {});
     api.googleHasDefault().then((v) => (this.googleHasDefault = v)).catch(() => {});
@@ -251,6 +261,7 @@ export class App extends LitElement {
     this.editing = null; this.filter = ""; this.dur = 0; this.lastSaved = 0; this.selectedId = null;
     this.view = "notes"; this.segments = [];
     this.phonemeRec = null; this.phonemeVersions = []; this.versionsError = ""; this.chapters = []; this.transcriptView = "transcript"; clearTimeout(this.pollTimer);
+    if (this.sseOn) { this.sseOn = false; api.phonemeSseStop().catch(() => {}); }
     await api.upsertVideo(id, url ?? `https://youtu.be/${id}`);
     await this.refreshVideos();
     this.player?.load(id, this.current?.last_pos_secs ?? 0);
@@ -488,6 +499,7 @@ export class App extends LitElement {
     }
     if (/^(done|.*_failed|cancelled)$/.test(this.phonemeRec.status)) {
       clearTimeout(this.pollTimer);
+      if (this.sseOn) { this.sseOn = false; api.phonemeSseStop().catch(() => {}); }
       try { this.segments = await api.phonemeSegments(rec); } catch { /* may have no timing */ }
       try {
         this.phonemeVersions = await api.phonemeVersions(rec);
@@ -496,6 +508,8 @@ export class App extends LitElement {
       } catch (e) { this.phonemeVersions = []; this.versionsError = String(e); }
       try { this.chapters = await api.phonemeChapters(rec); } catch { this.chapters = []; }
     } else {
+      // In flight: prefer live SSE updates; keep the 4s poll as the fallback.
+      if (!this.sseOn) { this.sseOn = true; api.phonemeSseStart().catch(() => { this.sseOn = false; }); }
       clearTimeout(this.pollTimer);
       this.pollTimer = window.setTimeout(() => this.refreshPhoneme(), 4000);
     }
