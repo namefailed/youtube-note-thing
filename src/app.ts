@@ -706,6 +706,18 @@ export class App extends LitElement {
               <span class="si-icon">${I.list}</span><span class="si-label">${p.title}</span><span class="count">${p.count}</span>
             </button>`) : nothing}
         </div>` : nothing}
+      </aside>
+
+      <section class="list" ?inert=${trapped}>
+        <div class="list-head" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
+          <button class="ham" title="Toggle filters" aria-label="Toggle filters" @click=${() => this.toggleSidebar()}>${I.menu}</button>
+          <input id="url" type="text" placeholder="Paste a YouTube video or playlist link…" autocomplete="off"
+            @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
+          <button class="primary" @click=${() => this.addFromInput()}>Load</button>
+          <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
+          <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
+          <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
+        </div>
         <div class="lib">
           ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v) => html`
             <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
@@ -724,21 +736,10 @@ export class App extends LitElement {
               ? html`No videos match this filter.<br /><button class="linkbtn" @click=${() => { this.tagFilter = null; this.libView = "all"; }}>Clear filters</button>`
               : "No videos yet — load one to start."}</div>`}
         </div>
-      </aside>
+      </section>
 
-      <main ?inert=${trapped}>
-        ${!this.currentId ? html`<div class="topbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
-          <button class="ham" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
-          <input id="url" type="text" placeholder="Paste a YouTube video or playlist link…" autocomplete="off"
-            @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
-          <button class="primary" @click=${() => this.addFromInput()}>Load</button>
-          <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
-          <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
-          <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
-        </div>` : nothing}
-
-        ${this.current ? html`<div class="nowplaying" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
-          <button class="ham" title="Toggle sidebar" aria-label="Toggle sidebar" @click=${() => this.toggleSidebar()}>${I.menu}</button>
+      <main class="detail" ?inert=${trapped}>
+        ${this.current ? html`<div class="nowplaying">
           <div class="np-main">
             ${this.titleEditing
               ? html`<input class="np-title-edit" type="text" .value=${this.current.title || ""}
@@ -747,12 +748,7 @@ export class App extends LitElement {
               : html`<div class="np-title" title="Click to rename" @click=${() => { this.titleEditing = true; this.updateComplete.then(() => (this.renderRoot.querySelector(".np-title-edit") as HTMLInputElement)?.select()); }}>${this.current.title || this.current.id}</div>`}
             <div class="np-meta">${this.current.channel || ""}${(this.dur || this.current.duration) ? html` · ${formatTime(this.dur || this.current.duration || 0)}` : nothing}</div>
           </div>
-          <div class="np-actions">
-            <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
-            <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
-            <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
-            <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
-          </div>
+          <a class="np-link" @click=${() => window.open(`https://www.youtube.com/watch?v=${this.current!.id}`, "_blank")}>Open on YouTube ↗</a>
         </div>` : nothing}
         <div id="playerWrap" class=${this.currentId ? "" : "hidden"}>
           <div id="player"></div>
@@ -811,10 +807,11 @@ export class App extends LitElement {
           <span class="grow"></span>
         </div>
 
-        ${this.view === "notes"
+        ${!this.currentId
+          ? html`<div class="empty detail-empty"><h3>No video selected</h3><p>Pick a video from the list, or paste a YouTube link above it.</p></div>`
+          : this.view === "notes"
           ? html`<div class="notes" role="list" aria-label="Notes for this video" @click=${(e: Event) => this.onNotesClick(e)}>
-              ${!this.currentId ? html`<div class="empty"><h3>No video loaded</h3><p>Paste a YouTube link above, then press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.</p></div>` : nothing}
-              ${this.currentId && filtered.length === 0 && !this.editing ? html`<div class="empty"><h3>${this.filter ? "No matching notes" : "No notes yet"}</h3><p>${this.filter ? "Try a different search." : html`Press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.`}</p></div>` : nothing}
+              ${filtered.length === 0 && !this.editing ? html`<div class="empty"><h3>${this.filter ? "No matching notes" : "No notes yet"}</h3><p>${this.filter ? "Try a different search." : html`Press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.`}</p></div>` : nothing}
               ${this.editing && !this.editing.id ? this.renderEditor() : nothing}
               ${filtered.map((n) => (this.editing?.id === n.id ? this.renderEditor() : this.renderNote(n)))}
             </div>`
@@ -1122,12 +1119,12 @@ export class App extends LitElement {
       --tint: color-mix(in srgb, var(--accent) 15%, transparent);
       --hover: color-mix(in srgb, var(--fg-default) 8%, transparent);
       --ui-motion: 200ms; --ui-motion-fast: 120ms;
-      display:grid; grid-template-columns:264px 1fr; grid-template-rows:minmax(0,1fr);
+      display:grid; grid-template-columns:220px 340px 1fr; grid-template-rows:minmax(0,1fr);
       height:100vh; background:var(--bg-deep); color:var(--fg-default);
       font:13.5px/1.55 "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
       -webkit-font-smoothing:antialiased;
     }
-    :host([collapsed]) { grid-template-columns:0 1fr; }
+    :host([collapsed]) { grid-template-columns:0 340px 1fr; }
     .hidden { display:none !important; }
     .tb-left { display:flex; align-items:center; }
     @media (prefers-reduced-motion: reduce) { :host { --ui-motion: 0ms; --ui-motion-fast: 0ms; } }
@@ -1149,9 +1146,12 @@ export class App extends LitElement {
     .tb-btn:hover { background:var(--hover); color:var(--fg-default); }
     .tb-btn.close:hover { background:var(--err); color:var(--bg-deep); }
 
-    aside { background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+    aside { background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-height:0; overflow-y:auto; padding-top:6px; }
+    .list { display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg-deep); border-right:1px solid var(--border-subtle); }
+    .list-head { flex:0 0 auto; padding:12px 12px 10px; border-bottom:1px solid var(--border-subtle); }
     .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); padding:14px 16px 6px; }
-    .lib { flex:1; min-height:0; overflow:auto; padding:0 8px 8px; display:flex; flex-direction:column; gap:2px; }
+    .lib { flex:1; min-height:0; overflow:auto; padding:6px 8px 8px; display:flex; flex-direction:column; gap:2px; }
+    .detail-empty { color:var(--fg-muted); }
     .libcard { display:flex; gap:9px; align-items:center; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; transition:background .12s; }
     .libcard:hover { background:var(--hover); }
     .libcard.active { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
@@ -1254,19 +1254,17 @@ export class App extends LitElement {
     input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
 
     main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:18px 20px; gap:14px; overflow-y:auto; }
-    .topbar { display:flex; gap:8px; align-items:center; }
-    .topbar input { flex:1; }
-    .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; margin-left:-10px; }
-    .topbar .ham { margin-right:2px; }      /* topbar gap 8 + 2 = 10 */
-    .nowplaying .ham { margin-right:-2px; }  /* nowplaying gap 12 - 2 = 10 */
+    .list-head { display:flex; gap:8px; align-items:center; }
+    .list-head input { flex:1; }
+    .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; }
     .ham:hover { background:var(--hover); color:var(--fg-default); }
     .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:12px; transition:background var(--ui-motion-fast); }
     .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
-    .topbar input, .topbar .ghost, .topbar .primary, .np-actions .ghost { height:32px; box-sizing:border-box; border-radius:6px; }
-    .topbar input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
-    .topbar input:focus-visible { outline:none; border-color:var(--kbd-cursor, var(--accent)); }
-    .topbar .ghost, .np-actions .ghost { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); background:var(--bg-elevated); color:var(--fg-muted); padding:0 10px; }
-    .topbar .ghost:hover, .np-actions .ghost:hover { border-color:var(--accent); color:var(--fg-default); background:var(--border-subtle); }
+    .list-head input, .list-head .ghost, .list-head .primary, .np-actions .ghost { height:32px; box-sizing:border-box; border-radius:6px; }
+    .list-head input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
+    .list-head input:focus-visible { outline:none; border-color:var(--kbd-cursor, var(--accent)); }
+    .list-head .ghost, .np-actions .ghost { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); background:var(--bg-elevated); color:var(--fg-muted); padding:0 10px; }
+    .list-head .ghost:hover, .np-actions .ghost:hover { border-color:var(--accent); color:var(--fg-default); background:var(--border-subtle); }
     .nowplaying { display:flex; align-items:center; gap:12px; }
     .np-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
     .np-main { flex:1; min-width:0; }
