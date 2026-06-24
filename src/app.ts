@@ -3,7 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion, type PhonemeProbe } from "./api";
 import { Player } from "./player";
-import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR, mergeTagSets } from "./lib";
+import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR, mergeTagSets, formatViews, relativeDate } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -329,7 +329,7 @@ export class App extends LitElement {
     listen("phoneme-event", () => { if (this.recId()) this.refreshPhoneme(); })
       .then((un) => (this.unlistenPhoneme = un)).catch(() => {});
     win()?.setDecorations(!this.settings.stripTitlebar)?.catch(() => {});
-    api.googleStatus().then((ok) => { this.googleConnected = ok; if (ok) this.loadGPlaylists(); }).catch(() => {});
+    api.googleStatus().then((ok) => { this.googleConnected = ok; if (ok) { this.loadGPlaylists(); this.syncMissingMeta(); } }).catch(() => {});
     api.googleHasDefault().then((v) => (this.googleHasDefault = v)).catch(() => {});
   }
   private async googleConnect() {
@@ -373,6 +373,18 @@ export class App extends LitElement {
   }
 
   private async refreshVideos() { this.videos = await api.listVideos(); }
+  /** Backfill YouTube metadata (channel, views, duration, date) for videos that
+   *  don't have it yet — needs Google connected; batched, idempotent. */
+  private async syncMissingMeta() {
+    if (!this.googleConnected) return;
+    if (!this.videos.length) await this.refreshVideos();
+    const ids = this.videos.filter((v) => v.view_count == null).map((v) => v.id);
+    if (!ids.length) return;
+    try {
+      await api.syncVideoMeta(this.settings.gClientId, this.settings.gClientSecret, ids);
+      await this.refreshVideos();
+    } catch { /* offline / quota — leave cards as they are */ }
+  }
   private async refreshNotes() { this.notes = this.currentId ? await api.listNotes(this.currentId) : []; }
 
   private async loadVideo(id: string, url?: string) {
@@ -387,6 +399,7 @@ export class App extends LitElement {
     await this.refreshNotes();
     // Pull/push this video's tags with Phoneme (no-op if unlinked or down).
     this.reconcileVideoTags(id).then((changed) => { if (changed) this.refreshVideos(); });
+    this.syncMissingMeta(); // backfill YouTube metadata for any new video (no-op if all cached)
   }
 
   private async addFromInput() {
@@ -400,6 +413,7 @@ export class App extends LitElement {
       try {
         const n = await api.importYoutubePlaylist(list);
         await this.refreshVideos();
+        this.syncMissingMeta();
         this.flash(n ? `Imported ${n} video${n > 1 ? "s" : ""} from playlist` : "Playlist already in your library", "ok");
       } catch (e) { this.flash(String(e), "err"); }
       if (id) this.loadVideo(id, raw);
@@ -978,12 +992,18 @@ export class App extends LitElement {
 
       <section class="list" ?inert=${trapped}>
         <div class="lib">
-          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v) => html`
+          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v) => {
+            const sub = [v.channel, v.view_count != null ? formatViews(v.view_count) : "", v.published_at ? relativeDate(v.published_at) : ""].filter(Boolean);
+            return html`
             <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
-              <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
-                @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
+              <div class="thumbwrap">
+                <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
+                  @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
+                ${v.duration ? html`<span class="durbadge">${formatTime(v.duration)}</span>` : nothing}
+              </div>
               <div class="meta">
                 <div class="t" title=${v.title || v.id}>${v.title || v.id}</div>
+                ${sub.length ? html`<div class="cmeta" title=${sub.join(" · ")}>${sub.join(" · ")}</div>` : nothing}
                 <div class="c">${v.note_count} ${v.note_count === 1 ? "note" : "notes"}${v.ext_ref ? html` · <span class="pill tx">transcript</span>` : nothing}</div>
                 ${v.tags.length ? html`<div class="ctags">${v.tags.map((t) => html`<span class="ctag" style="${this.chipStyle(t)}">${t}</span>`)}</div>` : nothing}
               </div>
@@ -991,7 +1011,8 @@ export class App extends LitElement {
                 <button class="ghost pin ${v.pinned ? "on" : ""}" title=${v.pinned ? "Unpin" : "Pin to top"} @click=${(e: Event) => { e.stopPropagation(); this.togglePin(v.id, v.pinned); }}>${I.pin}</button>
                 <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
               </div>
-            </div>`) : html`<div class="empty-lib">${this.videos.length
+            </div>`;
+          }) : html`<div class="empty-lib">${this.videos.length
               ? html`No videos match this filter.<br /><button class="linkbtn" @click=${() => { this.tagFilter = null; this.libView = "all"; }}>Clear filters</button>`
               : "No videos yet — load one to start."}</div>`}
         </div>
@@ -1509,20 +1530,23 @@ export class App extends LitElement {
     .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); padding:14px 16px 6px; }
     .lib { flex:1; min-height:0; overflow:auto; padding:6px 8px 8px; display:flex; flex-direction:column; gap:2px; }
     .detail-empty { color:var(--fg-muted); }
-    .libcard { display:flex; gap:9px; align-items:center; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; transition:background .12s; }
+    .libcard { display:flex; gap:9px; align-items:flex-start; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; transition:background .12s; }
     .libcard:hover { background:var(--hover); }
     .libcard.active { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
-    .libcard .thumb { width:58px; height:33px; border-radius:5px; object-fit:cover; background:#000; flex:0 0 auto; }
+    .libcard .thumbwrap { position:relative; flex:0 0 auto; }
+    .libcard .thumb { width:88px; height:50px; border-radius:5px; object-fit:cover; background:#000; display:block; }
+    .libcard .durbadge { position:absolute; bottom:3px; right:3px; background:rgba(0,0,0,.82); color:#fff; font-size:9.5px; line-height:14px; padding:0 4px; border-radius:3px; font-variant-numeric:tabular-nums; pointer-events:none; }
     .libcard .meta { min-width:0; flex:1; }
+    .libcard .cmeta { font-size:10.5px; color:var(--fg-faded); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .libcard .t { font-size:12.5px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .libcard .c { font-size:11px; color:var(--fg-faded); margin-top:1px; }
     .libcard .tx { color:var(--accent); }
     .ctags { display:flex; flex-wrap:wrap; gap:3px; margin-top:3px; }
     .ctag { font-size:9.5px; padding:1px 6px; border-radius:999px; background:var(--tag-color, var(--bg-deep)); color:var(--fg-muted); }
-    .lc-actions { position:absolute; top:4px; right:4px; display:flex; gap:1px; border-radius:6px; background:color-mix(in srgb, var(--bg-deep) 78%, transparent); backdrop-filter:blur(2px); }
-    .libcard .lc-actions .ghost { padding:3px; opacity:.85; }
-    .libcard:hover .lc-actions .ghost { opacity:.9; }
-    .libcard .lc-actions .ghost:hover { opacity:1; background:var(--hover); }
+    .lc-actions { flex:0 0 auto; align-self:flex-start; display:flex; flex-direction:column; gap:2px; opacity:.5; transition:opacity .12s; }
+    .libcard:hover .lc-actions, .libcard.active .lc-actions { opacity:1; }
+    .libcard .lc-actions .ghost { padding:3px; }
+    .libcard .lc-actions .ghost:hover { background:var(--hover); }
     .libcard .rm:hover { color:var(--err); background:color-mix(in srgb, var(--err) 14%, transparent); }
     .libcard .pin.on { opacity:1; color:var(--accent); }
     .libcard.sel { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }

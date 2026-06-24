@@ -1009,6 +1009,95 @@ async fn google_connect(app: AppHandle, client_id: String, client_secret: String
     save_tokens(&app, &tokens)
 }
 
+/// YouTube ISO-8601 duration (e.g. `PT1H2M3S`, `P1DT2H`) → whole seconds.
+fn parse_iso8601_duration(s: &str) -> Option<i64> {
+    let s = s.strip_prefix('P')?;
+    let (date, time) = s.split_once('T').unwrap_or((s, ""));
+    let mut secs: i64 = 0;
+    let mut num = String::new();
+    for c in date.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else {
+            let n: i64 = num.parse().unwrap_or(0);
+            num.clear();
+            if c == 'D' {
+                secs += n * 86_400;
+            }
+        }
+    }
+    num.clear();
+    for c in time.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else {
+            let n: i64 = num.parse().unwrap_or(0);
+            num.clear();
+            match c {
+                'H' => secs += n * 3600,
+                'M' => secs += n * 60,
+                'S' => secs += n,
+                _ => {}
+            }
+        }
+    }
+    Some(secs)
+}
+
+/// Fill library-card metadata (channel, view count, duration, publish date) for
+/// the given video ids from the YouTube Data API. Needs a connected Google
+/// account; batches 50 ids per request.
+#[tauri::command]
+async fn sync_video_meta(
+    app: AppHandle,
+    db: State<'_, Db>,
+    client_id: String,
+    client_secret: String,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let token = valid_access_token(&app, &client_id, &client_secret).await?;
+    let client = reqwest::Client::new();
+    for chunk in ids.chunks(50) {
+        let id_param = chunk.join(",");
+        let res: serde_json::Value = client
+            .get("https://www.googleapis.com/youtube/v3/videos")
+            .query(&[("part", "snippet,statistics,contentDetails"), ("id", id_param.as_str())])
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(err)?
+            .json()
+            .await
+            .map_err(err)?;
+        let Some(items) = res.get("items").and_then(|x| x.as_array()) else {
+            continue;
+        };
+        for it in items {
+            let Some(id) = it.get("id").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            let title = it.pointer("/snippet/title").and_then(|x| x.as_str());
+            let channel = it.pointer("/snippet/channelTitle").and_then(|x| x.as_str());
+            let published = it.pointer("/snippet/publishedAt").and_then(|x| x.as_str());
+            let views = it
+                .pointer("/statistics/viewCount")
+                .and_then(|x| x.as_str())
+                .and_then(|s| s.parse::<i64>().ok());
+            let duration = it
+                .pointer("/contentDetails/duration")
+                .and_then(|x| x.as_str())
+                .and_then(parse_iso8601_duration);
+            db.set_video_meta(id, title, channel, duration, views, published)
+                .await
+                .map_err(err)?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn google_playlists(app: AppHandle, client_id: String, client_secret: String) -> Result<Vec<GPlaylist>, String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
@@ -1242,6 +1331,7 @@ pub fn run() {
             google_logout,
             google_connect,
             google_playlists,
+            sync_video_meta,
             import_google_playlist,
             google_sync_playlist,
             google_remove_playlist_item,
@@ -1254,6 +1344,16 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_iso8601_durations() {
+        assert_eq!(parse_iso8601_duration("PT1H2M3S"), Some(3723));
+        assert_eq!(parse_iso8601_duration("PT15M"), Some(900));
+        assert_eq!(parse_iso8601_duration("PT45S"), Some(45));
+        assert_eq!(parse_iso8601_duration("P1DT2H"), Some(93_600));
+        assert_eq!(parse_iso8601_duration("PT0S"), Some(0));
+        assert_eq!(parse_iso8601_duration("garbage"), None);
+    }
 
     #[test]
     fn parses_phoneme_version_line() {

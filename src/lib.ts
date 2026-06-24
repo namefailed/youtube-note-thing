@@ -110,6 +110,33 @@ export function formatTime(secs: number): string {
   return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+/** Compact view count, e.g. 1500 → "1.5K views", 2_000_000 → "2M views". */
+export function formatViews(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "";
+  const trim = (s: string) => s.replace(/\.0$/, "");
+  const compact = n >= 1e9 ? trim((n / 1e9).toFixed(1)) + "B"
+    : n >= 1e6 ? trim((n / 1e6).toFixed(1)) + "M"
+    : n >= 1e3 ? trim((n / 1e3).toFixed(1)) + "K"
+    : String(n);
+  return `${compact} view${n === 1 ? "" : "s"}`;
+}
+
+/** Coarse relative date from an ISO string, e.g. "3 years ago". `now` is
+ *  injectable so it's testable. Empty string for unparseable/future input. */
+export function relativeDate(iso: string, now = Date.now()): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const days = Math.floor((now - t) / 86_400_000);
+  if (days < 0) return "";
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} month${months === 1 ? "" : "s"} ago`;
+  const years = Math.floor(days / 365);
+  return `${years} year${years === 1 ? "" : "s"} ago`;
+}
+
 export function applyOffset(secs: number, offset: number): number {
   return Math.max(0, (Number(secs) || 0) - (Number(offset) || 0));
 }

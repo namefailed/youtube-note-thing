@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 export interface VideoWithCount {
   id: string; title: string; channel: string | null; url: string;
   duration: number | null; last_pos_secs: number; manual_order: boolean; note_count: number; tags: string[];
-  ext_ref: string | null; pinned: boolean;
+  ext_ref: string | null; pinned: boolean; view_count: number | null; published_at: string | null;
 }
 export interface Video {
   id: string; title: string; channel: string | null; url: string;
@@ -75,6 +75,8 @@ export const api = {
   googleLogout: () => invoke<void>("google_logout"),
   googlePlaylists: (clientId: string, clientSecret: string) =>
     invoke<GPlaylist[]>("google_playlists", { clientId, clientSecret }),
+  syncVideoMeta: (clientId: string, clientSecret: string, ids: string[]) =>
+    invoke<void>("sync_video_meta", { clientId, clientSecret, ids }),
   importGooglePlaylist: (clientId: string, clientSecret: string, playlistId: string) =>
     invoke<number>("import_google_playlist", { clientId, clientSecret, playlistId }),
   googleSyncPlaylist: (clientId: string, clientSecret: string, playlistId: string, playlistTitle: string) =>

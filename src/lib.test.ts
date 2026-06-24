@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, tsLink, notesToMarkdown, safeTagColor, tagInk, mergeTagSets } from "./lib";
+import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, tsLink, notesToMarkdown, safeTagColor, tagInk, mergeTagSets, formatViews, relativeDate } from "./lib";
 
 const sorted = (a: string[]) => [...a].sort();
 
@@ -17,6 +17,30 @@ describe("tag colors", () => {
     expect(tagInk("#000000")).toBe("#ffffff");
     expect(tagInk("#cba6f7")).toBe("#11111b"); // mauve is light
     expect(tagInk("notahex")).toBe("");
+  });
+});
+
+describe("formatViews", () => {
+  it("compacts counts with K/M/B and pluralizes", () => {
+    expect(formatViews(0)).toBe("0 views");
+    expect(formatViews(1)).toBe("1 view");
+    expect(formatViews(999)).toBe("999 views");
+    expect(formatViews(1500)).toBe("1.5K views");
+    expect(formatViews(2_000_000)).toBe("2M views");
+    expect(formatViews(1_200_000)).toBe("1.2M views");
+    expect(formatViews(3_400_000_000)).toBe("3.4B views");
+  });
+});
+
+describe("relativeDate", () => {
+  const now = Date.parse("2026-06-24T00:00:00Z");
+  it("buckets into today/days/months/years", () => {
+    expect(relativeDate("2026-06-24T00:00:00Z", now)).toBe("today");
+    expect(relativeDate("2026-06-23T00:00:00Z", now)).toBe("yesterday");
+    expect(relativeDate("2026-06-10T00:00:00Z", now)).toBe("14 days ago");
+    expect(relativeDate("2026-04-24T00:00:00Z", now)).toBe("2 months ago");
+    expect(relativeDate("2023-06-24T00:00:00Z", now)).toBe("3 years ago");
+    expect(relativeDate("nonsense", now)).toBe("");
   });
 });
 

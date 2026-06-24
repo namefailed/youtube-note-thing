@@ -24,6 +24,8 @@ pub struct VideoWithCount {
     pub tags: Json<Vec<String>>,
     pub ext_ref: Option<String>,
     pub pinned: bool,
+    pub view_count: Option<i64>,
+    pub published_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -105,6 +107,7 @@ impl Db {
     pub async fn list_videos(&self) -> Result<Vec<VideoWithCount>, sqlx::Error> {
         sqlx::query_as::<_, VideoWithCount>(
             "SELECT v.id, v.title, v.channel, v.url, v.duration, v.last_pos_secs, v.manual_order, v.tags, v.ext_ref, v.pinned,
+                    v.view_count, v.published_at,
                     (SELECT COUNT(*) FROM notes n WHERE n.video_id = v.id) AS note_count
              FROM videos v ORDER BY v.added_at DESC",
         )
@@ -151,6 +154,38 @@ impl Db {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// Fill YouTube metadata for one video (from the Data API). NULL args leave
+    /// the existing value; an empty title keeps the current one too.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_video_meta(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        channel: Option<&str>,
+        duration: Option<i64>,
+        view_count: Option<i64>,
+        published_at: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE videos SET
+                title        = COALESCE(NULLIF(?, ''), title),
+                channel      = COALESCE(?, channel),
+                duration     = COALESCE(?, duration),
+                view_count   = COALESCE(?, view_count),
+                published_at = COALESCE(?, published_at)
+             WHERE id = ?",
+        )
+        .bind(title)
+        .bind(channel)
+        .bind(duration)
+        .bind(view_count)
+        .bind(published_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
