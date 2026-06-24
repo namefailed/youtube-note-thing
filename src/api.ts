@@ -20,6 +20,7 @@ export interface Chapter { start_ms: number; end_ms: number; title: string; summ
 export interface PhonemeHit { id: string; title: string; snippet: string; }
 export interface PhonemeRec { status: string; title: string; summary: string; model: string; language: string; duration_ms: number; confidence: number | null; entities: { kind: string; value: string }[]; tasks: { text: string; done: boolean }[]; }
 export interface TranscriptVersion { idx: number; label: string; model: string; text: string; }
+export interface PhonemeProbe { present: boolean; daemon_ok: boolean; version: string; compatible: boolean; }
 export interface GPlaylist { id: string; title: string; count: number; }
 export interface PlaylistItem { video_id: string; item_id: string; title: string; position: number; in_library: boolean; }
 export interface PlaylistRef { playlist_id: string; playlist_title: string; item_id: string; }
@@ -48,6 +49,7 @@ export const api = {
   saveMarkdown: (dir: string, name: string, content: string) =>
     invoke<string>("save_markdown", { dir, name, content }),
   phonemeAvailable: () => invoke<boolean>("phoneme_available"),
+  phonemeProbe: () => invoke<PhonemeProbe>("phoneme_probe"),
   phonemeImport: (url: string) => invoke<string>("phoneme_import", { url }),
   phonemeSegments: (id: string) => invoke<Segment[]>("phoneme_segments", { id }),
   phonemeChapters: (id: string) => invoke<Chapter[]>("phoneme_chapters", { id }),

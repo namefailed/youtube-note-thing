@@ -145,6 +145,62 @@ fn phoneme_available() -> bool {
         .unwrap_or(false)
 }
 
+/// The lowest Phoneme version whose `--json` / CLI contract ytnt was built
+/// against (e.g. `chapters --show`, `show --segments`). Older daemons get a
+/// loud "update Phoneme" notice instead of silently-blank panels.
+const MIN_PHONEME_VERSION: (u32, u32) = (1, 8);
+
+/// Parse the major/minor out of `phoneme version`'s `phoneme X.Y.Z` line.
+fn parse_phoneme_version(out: &str) -> Option<(u32, u32)> {
+    let v = out.split_whitespace().last()?;
+    let mut parts = v.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+#[derive(serde::Serialize)]
+struct PhonemeProbe {
+    /// CLI on PATH and `phoneme version` succeeded.
+    present: bool,
+    /// The daemon answered a `list` (the full feature path is usable).
+    daemon_ok: bool,
+    /// Reported `X.Y.Z`, or empty when the CLI couldn't be run.
+    version: String,
+    /// `version` is at least [`MIN_PHONEME_VERSION`] (or unknown, treated as ok).
+    compatible: bool,
+}
+
+/// A richer Phoneme probe than [`phoneme_available`]: distinguishes "CLI present"
+/// (version prints — no daemon needed) from "daemon reachable" (a `list`
+/// succeeds), and flags a too-old CLI. The frontend polls this so a daemon that
+/// dies (or starts) mid-session is reflected live, and an incompatible install
+/// degrades loudly instead of showing blank panels.
+#[tauri::command]
+fn phoneme_probe() -> PhonemeProbe {
+    let version_out = std::process::Command::new("phoneme")
+        .arg("version")
+        .output();
+    let (present, version) = match &version_out {
+        Ok(o) if o.status.success() => (
+            true,
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .last()
+                .unwrap_or("")
+                .to_string(),
+        ),
+        _ => (false, String::new()),
+    };
+    // Unknown version (e.g. a build without `version`) is treated as compatible
+    // rather than locking the user out; a parseable-but-old one degrades loudly.
+    let compatible = parse_phoneme_version(&version)
+        .map(|v| v >= MIN_PHONEME_VERSION)
+        .unwrap_or(true);
+    let daemon_ok = present && phoneme_available();
+    PhonemeProbe { present, daemon_ok, version, compatible }
+}
+
 /// Hand a YouTube URL to Phoneme (downloads audio + queues transcription).
 /// Blocks until the download finishes, so it runs off the async pool. Returns the
 /// new recording id.
@@ -160,21 +216,37 @@ async fn phoneme_import(url: String) -> Result<String, String> {
     Ok(id)
 }
 
-/// Fetch a recording's transcript segments (empty while still transcribing).
-#[tauri::command]
-fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
-    let out = run_phoneme(&["--json", "show", &id, "--segments"])?;
-    let mut segs = Vec::new();
+/// Parse JSON-lines output, logging (not silently dropping) any unparseable
+/// line. Errors only when there WAS output but nothing parsed — a sign the
+/// contract drifted — so callers can surface a quiet notice instead of a blank
+/// panel. Genuinely empty output (nothing transcribed yet) is an empty Vec, OK.
+fn parse_json_lines<T: serde::de::DeserializeOwned>(out: &str, what: &str) -> Result<Vec<T>, String> {
+    let mut items = Vec::new();
+    let mut seen = 0usize;
     for line in out.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Ok(s) = serde_json::from_str::<Segment>(line) {
-            segs.push(s);
+        seen += 1;
+        match serde_json::from_str::<T>(line) {
+            Ok(v) => items.push(v),
+            Err(e) => eprintln!("phoneme {what}: skipping unparseable line: {e}"),
         }
     }
-    Ok(segs)
+    if seen > 0 && items.is_empty() {
+        return Err(format!(
+            "Couldn't read Phoneme's {what} output — it may be a different version than expected."
+        ));
+    }
+    Ok(items)
+}
+
+/// Fetch a recording's transcript segments (empty while still transcribing).
+#[tauri::command]
+fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
+    let out = run_phoneme(&["--json", "show", &id, "--segments"])?;
+    parse_json_lines(&out, "segments")
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -191,18 +263,7 @@ struct Chapter {
 #[tauri::command]
 fn phoneme_chapters(id: String) -> Result<Vec<Chapter>, String> {
     let out = run_phoneme(&["--json", "chapters", &id, "--show"])?;
-    let mut chapters = Vec::new();
-    for line in out.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Chapter>(line) {
-            Ok(c) => chapters.push(c),
-            Err(e) => eprintln!("phoneme_chapters: skipping unparseable line: {e}"),
-        }
-    }
-    Ok(chapters)
+    parse_json_lines(&out, "chapters")
 }
 
 #[derive(serde::Serialize)]
@@ -220,12 +281,18 @@ fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
     }
     let out = run_phoneme(&["--json", "search", &query, "--limit", "10"])?;
     let mut hits = Vec::new();
+    let mut seen = 0usize;
+    let mut parse_failed = 0usize;
     for line in out.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        seen += 1;
+        let v = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => v,
+            Err(e) => { eprintln!("phoneme search: skipping unparseable line: {e}"); parse_failed += 1; continue }
+        };
         let rec = v.get("recording").unwrap_or(&v);
         let id = rec.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
         if id.is_empty() {
@@ -241,6 +308,10 @@ fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
             .take(140)
             .collect();
         hits.push(PhonemeHit { id, title, snippet });
+    }
+    // Every line failed to even parse as JSON → the contract drifted; surface it.
+    if seen > 0 && parse_failed == seen {
+        return Err("Couldn't read Phoneme's search output — it may be a different version than expected.".into());
     }
     Ok(hits)
 }
@@ -902,6 +973,7 @@ pub fn run() {
             import_json,
             save_markdown,
             phoneme_available,
+            phoneme_probe,
             phoneme_import,
             phoneme_segments,
             phoneme_chapters,
@@ -922,4 +994,50 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_phoneme_version_line() {
+        assert_eq!(parse_phoneme_version("phoneme 1.8.1"), Some((1, 8)));
+        assert_eq!(parse_phoneme_version("1.10.0"), Some((1, 10)));
+        assert_eq!(parse_phoneme_version("phoneme 2.0"), Some((2, 0)));
+        assert_eq!(parse_phoneme_version(""), None);
+        assert_eq!(parse_phoneme_version("phoneme dev"), None);
+    }
+
+    #[test]
+    fn min_version_gate() {
+        let ge = |v: &str| {
+            parse_phoneme_version(v)
+                .map(|x| x >= MIN_PHONEME_VERSION)
+                .unwrap_or(true)
+        };
+        assert!(ge("phoneme 1.8.0"));
+        assert!(ge("phoneme 1.9.2"));
+        assert!(ge("phoneme 2.0.0"));
+        assert!(!ge("phoneme 1.7.9"));
+        assert!(!ge("phoneme 0.9.0"));
+        // Unknown version → treated as compatible (don't lock the user out).
+        assert!(ge("phoneme dev"));
+    }
+
+    #[test]
+    fn json_lines_parses_skips_and_flags_total_failure() {
+        // Mixed: one good, one junk → keep the good, no error.
+        let good_and_bad = "{\"start_ms\":0,\"end_ms\":1,\"text\":\"hi\"}\nnot json\n";
+        let segs: Vec<Segment> = parse_json_lines(good_and_bad, "segments").unwrap();
+        assert_eq!(segs.len(), 1);
+
+        // Genuinely empty output → empty Vec, OK (nothing transcribed yet).
+        let empty: Vec<Segment> = parse_json_lines("\n  \n", "segments").unwrap();
+        assert!(empty.is_empty());
+
+        // Output present but nothing parsed → error (contract drift).
+        let all_bad = parse_json_lines::<Segment>("garbage\nmore garbage\n", "segments");
+        assert!(all_bad.is_err());
+    }
 }

@@ -1,7 +1,7 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion } from "./api";
+import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion, type PhonemeProbe } from "./api";
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
@@ -97,6 +97,10 @@ export class App extends LitElement {
   @state() private plItems: PlaylistItem[] = [];
   @state() private plLoading = false;
   @state() private phonemeOk = false;
+  @state() private phonemePresent = false;
+  @state() private phonemeCompatible = true;
+  @state() private phonemeVersion = "";
+  private probeTimer = 0;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private rate = 1;
   @state() private segments: Segment[] = [];
@@ -167,6 +171,20 @@ export class App extends LitElement {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onKey, true);
     window.removeEventListener("focusin", this.onFocusIn, true);
+    clearInterval(this.probeTimer);
+  }
+
+  /** Probe Phoneme's CLI/daemon/version; flips phonemeOk and the compat flags live. */
+  private async probePhoneme() {
+    try {
+      const p: PhonemeProbe = await api.phonemeProbe();
+      this.phonemeOk = p.daemon_ok;
+      this.phonemePresent = p.present;
+      this.phonemeCompatible = p.compatible;
+      this.phonemeVersion = p.version;
+    } catch {
+      this.phonemeOk = false; this.phonemePresent = false;
+    }
   }
 
   firstUpdated() {
@@ -176,7 +194,10 @@ export class App extends LitElement {
     this.player.onTick = (t, d) => this.onTick(t, d);
     this.player.onTitle = (title) => this.onTitle(title);
     this.player.onError = (code) => this.onPlayerError(code);
-    api.phonemeAvailable().then((ok) => (this.phonemeOk = ok)).catch(() => {});
+    this.probePhoneme();
+    // Re-probe on a timer so a daemon that starts or dies mid-session flips
+    // phonemeOk live (not only at startup).
+    this.probeTimer = window.setInterval(() => this.probePhoneme(), 15000);
     win()?.setDecorations(!this.settings.stripTitlebar)?.catch(() => {});
     api.googleStatus().then((ok) => { this.googleConnected = ok; if (ok) this.loadGPlaylists(); }).catch(() => {});
     api.googleHasDefault().then((v) => (this.googleHasDefault = v)).catch(() => {});
@@ -418,6 +439,25 @@ export class App extends LitElement {
     await api.setExtRef(this.currentId, rec);
     await this.refreshVideos();
   }
+  /** Drop a video's link to a Phoneme recording that no longer exists. */
+  private async unlinkRef() {
+    if (!this.currentId) return;
+    await api.setExtRef(this.currentId, null);
+    this.phonemeRec = null; this.segments = []; this.phonemeVersions = []; this.chapters = [];
+    await this.refreshVideos();
+    this.flash("Unlinked from Phoneme — you can transcribe again.", "ok");
+  }
+  /** The linked recording id no longer resolves in Phoneme — offer to unlink. */
+  private async offerUnlinkDeadRef() {
+    let yes = false;
+    try {
+      yes = await confirmDialog(
+        "This video is linked to a Phoneme recording that no longer exists. Unlink it?",
+        { title: "Recording not found", kind: "warning" });
+    } catch { /* dialog unavailable — leave the link, just notify */ }
+    if (yes) await this.unlinkRef();
+    else this.flash("Phoneme recording not found.", "err");
+  }
   private async sendToPhoneme() {
     const v = this.current; if (!v) return;
     this.transcriptBusy = true; this.flash("Sending to Phoneme — downloading + queuing…");
@@ -433,7 +473,18 @@ export class App extends LitElement {
   private async refreshPhoneme() {
     const rec = this.recId(); if (!rec) { clearTimeout(this.pollTimer); return; }
     try { this.phonemeRec = await api.phonemeRecording(rec); }
-    catch (e) { clearTimeout(this.pollTimer); this.flash(String(e), "err"); return; }
+    catch (e) {
+      clearTimeout(this.pollTimer);
+      const msg = String(e);
+      // The daemon is up (phonemeOk) but the linked recording no longer resolves
+      // → a dead ext_ref. Offer to unlink rather than leaving a broken link.
+      if (this.phonemeOk && /not\s*found|no\s+recording|unknown/i.test(msg)) {
+        this.offerUnlinkDeadRef();
+      } else {
+        this.flash(msg, "err");
+      }
+      return;
+    }
     if (/^(done|.*_failed|cancelled)$/.test(this.phonemeRec.status)) {
       clearTimeout(this.pollTimer);
       try { this.segments = await api.phonemeSegments(rec); } catch { /* may have no timing */ }
@@ -672,7 +723,7 @@ export class App extends LitElement {
         <button class="primary" @click=${() => this.addFromInput()}>Load</button>
         <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
         <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
-        <span class="hdot ${this.phonemeOk ? "ok" : ""}" title=${this.phonemeOk ? "Phoneme connected" : "Phoneme not detected"}></span>
+        <span class="hdot ${this.phonemeOk ? "ok" : this.phonemePresent ? "warn" : ""}" title=${this.phonemeOk ? `Phoneme connected${this.phonemeVersion ? ` (${this.phonemeVersion})` : ""}` : this.phonemePresent ? "Phoneme installed — daemon not responding" : "Phoneme not detected"}></span>
       </header>
 
       <aside ?inert=${trapped}>
@@ -1001,12 +1052,18 @@ export class App extends LitElement {
     </div>`;
   }
 
+  /** Loud inline notice when Phoneme is present but too old to trust its output. */
+  private renderCompatNotice() {
+    if (!this.phonemePresent || this.phonemeCompatible) return nothing;
+    return html`<div class="compat-warn">⚠ Phoneme ${this.phonemeVersion || "(unknown version)"} looks older than this app expects — transcript panels may be empty or wrong. Please update Phoneme.</div>`;
+  }
   private renderTranscript() {
     if (!this.currentId) return html`<div class="notes"><div class="empty">Load a video first.</div></div>`;
     const rec = this.recId();
     // Not linked to Phoneme yet — offer to transcribe (or YouTube captions).
     if (!rec) {
       return html`<div class="notes"><div class="empty src">
+        ${this.renderCompatNotice()}
         ${this.phonemeOk
           ? html`<button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Transcribe with Phoneme</button>`
           : nothing}
@@ -1014,7 +1071,9 @@ export class App extends LitElement {
         <div class="muted sm">${this.transcriptBusy ? "Working…"
           : this.phonemeOk
             ? "Phoneme transcribes the audio and gives cleaned text, side-by-side pipeline versions, a summary, entities and tasks."
-            : "Phoneme not detected — captions are best-effort. Install Phoneme for full transcripts, summaries and more."}</div>
+            : this.phonemePresent
+              ? "Phoneme is installed but its daemon isn't responding — start it (or check it) to transcribe. Captions are best-effort meanwhile."
+              : "Phoneme not detected — captions are best-effort. Install Phoneme for full transcripts, summaries and more."}</div>
       </div></div>`;
     }
     // Linked but not finished — show the live pipeline stage.
@@ -1029,6 +1088,7 @@ export class App extends LitElement {
     }
     // Done — Transcript / Compare / Summary views.
     return html`<div class="notes tpane">
+      ${this.renderCompatNotice()}
       <div class="tview-tabs">
         <button class="tab ${this.transcriptView === "transcript" ? "on" : ""}" @click=${() => (this.transcriptView = "transcript")}>Transcript</button>
         ${this.chapters.length ? html`<button class="tab ${this.transcriptView === "chapters" ? "on" : ""}" @click=${() => (this.transcriptView = "chapters")}>Chapters (${this.chapters.length})</button>` : nothing}
@@ -1298,6 +1358,8 @@ export class App extends LitElement {
     .ham:hover { background:var(--hover); color:var(--fg-default); }
     .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:4px; transition:background var(--ui-motion-fast); }
     .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
+    .hdot.warn { background:var(--warn); box-shadow:0 0 8px color-mix(in srgb, var(--warn) 70%, transparent); }
+    .compat-warn { background:color-mix(in srgb, var(--warn) 18%, transparent); border:1px solid var(--warn); color:var(--fg-default); border-radius:var(--r-sm); padding:8px 11px; font-size:12.5px; line-height:1.45; }
     .appbar input, .appbar .ghost, .appbar .primary, .np-actions .ghost { height:32px; box-sizing:border-box; border-radius:6px; }
     .appbar input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
     .appbar input:focus-visible { outline:none; border-color:var(--kbd-cursor, var(--accent)); }
