@@ -1283,7 +1283,7 @@ export class App extends LitElement {
     .appbar input { flex:1; }
     .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; }
     .ham:hover { background:var(--hover); color:var(--fg-default); }
-    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:12px; transition:background var(--ui-motion-fast); }
+    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:4px; transition:background var(--ui-motion-fast); }
     .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
     .appbar input, .appbar .ghost, .appbar .primary, .np-actions .ghost { height:32px; box-sizing:border-box; border-radius:6px; }
     .appbar input { border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:0 1px 2px rgba(0,0,0,.3); }
