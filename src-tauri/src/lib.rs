@@ -3,7 +3,7 @@
 
 mod db;
 
-use db::{Backup, Db, Note, SearchHit, VideoWithCount};
+use db::{Backup, Db, Note, PlaylistItem, PlaylistRef, SearchHit, VideoWithCount};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use tauri::{AppHandle, Manager, State};
@@ -529,7 +529,7 @@ async fn google_connect(app: AppHandle, client_id: String, client_secret: String
         .append_pair("prompt", "consent")
         .append_pair("client_id", &client_id)
         .append_pair("redirect_uri", &redirect)
-        .append_pair("scope", "https://www.googleapis.com/auth/youtube.readonly");
+        .append_pair("scope", "https://www.googleapis.com/auth/youtube");
     app.opener().open_url(auth.to_string(), None::<&str>).map_err(err)?;
     let code = tauri::async_runtime::spawn_blocking(move || wait_for_code(listener))
         .await
@@ -621,6 +621,92 @@ async fn import_google_playlist(
     db.import_playlist(&vids).await.map_err(err)
 }
 
+/// Sync one playlist's contents into the local cache (so it can be browsed, and so
+/// a delete knows the playlistItem id), and return them with an `in_library` flag.
+#[tauri::command]
+async fn google_sync_playlist(
+    app: AppHandle,
+    db: State<'_, Db>,
+    client_id: String,
+    client_secret: String,
+    playlist_id: String,
+    playlist_title: String,
+) -> Result<Vec<PlaylistItem>, String> {
+    let token = valid_access_token(&app, &client_id, &client_secret).await?;
+    let client = reqwest::Client::new();
+    let mut items: Vec<(String, String, String, i64)> = Vec::new();
+    let mut page = String::new();
+    loop {
+        let mut q = vec![
+            ("part", "snippet"),
+            ("playlistId", playlist_id.as_str()),
+            ("maxResults", "50"),
+        ];
+        if !page.is_empty() {
+            q.push(("pageToken", page.as_str()));
+        }
+        let res: serde_json::Value = client
+            .get("https://www.googleapis.com/youtube/v3/playlistItems")
+            .query(&q)
+            .bearer_auth(&token)
+            .send().await.map_err(err)?
+            .json().await.map_err(err)?;
+        if let Some(arr) = res.get("items").and_then(|x| x.as_array()) {
+            for it in arr {
+                let vid = it.pointer("/snippet/resourceId/videoId").and_then(|x| x.as_str()).unwrap_or("");
+                if vid.is_empty() {
+                    continue;
+                }
+                let item_id = it.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                let title = it.pointer("/snippet/title").and_then(|x| x.as_str()).unwrap_or("");
+                let pos = it.pointer("/snippet/position").and_then(|x| x.as_i64()).unwrap_or(items.len() as i64);
+                items.push((vid.to_string(), item_id.to_string(), title.to_string(), pos));
+            }
+        } else if let Some(e) = res.pointer("/error/message").and_then(|x| x.as_str()) {
+            return Err(e.to_string());
+        }
+        match res.get("nextPageToken").and_then(|x| x.as_str()) {
+            Some(t) => page = t.to_string(),
+            None => break,
+        }
+    }
+    db.sync_playlist(&playlist_id, &playlist_title, &items).await.map_err(err)?;
+    db.playlist_items(&playlist_id).await.map_err(err)
+}
+
+/// Remove one entry from the real YouTube playlist (needs the full youtube scope),
+/// then drop it from the local cache.
+#[tauri::command]
+async fn google_remove_playlist_item(
+    app: AppHandle,
+    db: State<'_, Db>,
+    client_id: String,
+    client_secret: String,
+    playlist_id: String,
+    video_id: String,
+    item_id: String,
+) -> Result<(), String> {
+    let token = valid_access_token(&app, &client_id, &client_secret).await?;
+    let res = reqwest::Client::new()
+        .delete("https://www.googleapis.com/youtube/v3/playlistItems")
+        .query(&[("id", item_id.as_str())])
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(err)?;
+    if !res.status().is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("Couldn't remove from playlist (need write access?): {body}"));
+    }
+    db.delete_playlist_item(&playlist_id, &video_id).await.map_err(err)
+}
+
+/// Which synced playlists a video is in (with the item id needed to remove it).
+#[tauri::command]
+async fn video_playlists(db: State<'_, Db>, video_id: String) -> Result<Vec<PlaylistRef>, String> {
+    db.video_playlists(&video_id).await.map_err(err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -679,6 +765,9 @@ pub fn run() {
             google_connect,
             google_playlists,
             import_google_playlist,
+            google_sync_playlist,
+            google_remove_playlist_item,
+            video_playlists,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

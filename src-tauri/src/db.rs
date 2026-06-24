@@ -57,6 +57,22 @@ pub struct SearchHit {
     pub content: String,
 }
 
+#[derive(Debug, Serialize, FromRow)]
+pub struct PlaylistItem {
+    pub video_id: String,
+    pub item_id: String,
+    pub title: String,
+    pub position: i64,
+    pub in_library: bool,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct PlaylistRef {
+    pub playlist_id: String,
+    pub playlist_title: String,
+    pub item_id: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct BackupVideo {
     pub id: String,
@@ -164,6 +180,58 @@ impl Db {
         }
         tx.commit().await?;
         Ok(n)
+    }
+
+    /// Replace the cached contents of one playlist. items = (video_id, item_id, title, position).
+    pub async fn sync_playlist(&self, playlist_id: &str, playlist_title: &str, items: &[(String, String, String, i64)]) -> Result<usize, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .execute(&mut *tx)
+            .await?;
+        for (video_id, item_id, title, position) in items {
+            sqlx::query("INSERT OR REPLACE INTO playlist_items (playlist_id, playlist_title, video_id, item_id, title, position) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(playlist_id)
+                .bind(playlist_title)
+                .bind(video_id)
+                .bind(item_id)
+                .bind(title)
+                .bind(position)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(items.len())
+    }
+
+    pub async fn playlist_items(&self, playlist_id: &str) -> Result<Vec<PlaylistItem>, sqlx::Error> {
+        sqlx::query_as::<_, PlaylistItem>(
+            "SELECT pi.video_id, pi.item_id, pi.title, pi.position, (v.id IS NOT NULL) AS in_library
+             FROM playlist_items pi LEFT JOIN videos v ON v.id = pi.video_id
+             WHERE pi.playlist_id = ? ORDER BY pi.position",
+        )
+        .bind(playlist_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Which synced playlists a video belongs to (with the item id needed to remove it).
+    pub async fn video_playlists(&self, video_id: &str) -> Result<Vec<PlaylistRef>, sqlx::Error> {
+        sqlx::query_as::<_, PlaylistRef>(
+            "SELECT playlist_id, playlist_title, item_id FROM playlist_items WHERE video_id = ? AND item_id != ''",
+        )
+        .bind(video_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn delete_playlist_item(&self, playlist_id: &str, video_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ? AND video_id = ?")
+            .bind(playlist_id)
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn set_last_pos(&self, id: &str, secs: f64) -> Result<(), sqlx::Error> {

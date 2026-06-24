@@ -18,6 +18,8 @@ export interface SearchHit {
 export interface Segment { start_ms: number; end_ms: number; text: string; speaker: string | null; }
 export interface PhonemeHit { id: string; title: string; snippet: string; }
 export interface GPlaylist { id: string; title: string; count: number; }
+export interface PlaylistItem { video_id: string; item_id: string; title: string; position: number; in_library: boolean; }
+export interface PlaylistRef { playlist_id: string; playlist_title: string; item_id: string; }
 
 // Tauri maps camelCase JS keys to snake_case Rust params automatically.
 export const api = {
@@ -59,4 +61,9 @@ export const api = {
     invoke<GPlaylist[]>("google_playlists", { clientId, clientSecret }),
   importGooglePlaylist: (clientId: string, clientSecret: string, playlistId: string) =>
     invoke<number>("import_google_playlist", { clientId, clientSecret, playlistId }),
+  googleSyncPlaylist: (clientId: string, clientSecret: string, playlistId: string, playlistTitle: string) =>
+    invoke<PlaylistItem[]>("google_sync_playlist", { clientId, clientSecret, playlistId, playlistTitle }),
+  googleRemovePlaylistItem: (clientId: string, clientSecret: string, playlistId: string, videoId: string, itemId: string) =>
+    invoke<void>("google_remove_playlist_item", { clientId, clientSecret, playlistId, videoId, itemId }),
+  videoPlaylists: (videoId: string) => invoke<PlaylistRef[]>("video_playlists", { videoId }),
 };

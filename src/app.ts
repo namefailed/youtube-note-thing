@@ -1,13 +1,13 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit, type GPlaylist } from "./api";
+import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef } from "./api";
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check } from "@tauri-apps/plugin-updater";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 
 // Lazy + guarded: outside the Tauri runtime (e.g. a browser preview) this is
@@ -40,6 +40,7 @@ const I = {
   film: svg`<svg viewBox="0 0 24 24" class="i"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16M16 4v16"/></svg>`,
   captions: svg`<svg viewBox="0 0 24 24" class="i"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11h3M7 14h6M14 11h3"/></svg>`,
   list: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 6h11M4 12h11M4 18h7M17 13l4 2-4 2z"/></svg>`,
+  check: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12l5 5L20 7"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -90,6 +91,9 @@ export class App extends LitElement {
   @state() private googleConnected = false;
   @state() private googleHasDefault = false;
   @state() private gplaylists: GPlaylist[] = [];
+  @state() private plFilter: GPlaylist | null = null;
+  @state() private plItems: PlaylistItem[] = [];
+  @state() private plLoading = false;
   @state() private phonemeOk = false;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private rate = 1;
@@ -185,15 +189,6 @@ export class App extends LitElement {
     try { this.gplaylists = await api.googlePlaylists(this.settings.gClientId, this.settings.gClientSecret); }
     catch (e) { this.flash(String(e), "err"); }
   }
-  private async importGPlaylist(p: GPlaylist) {
-    this.flash(`Importing “${p.title}”…`);
-    try {
-      const n = await api.importGooglePlaylist(this.settings.gClientId, this.settings.gClientSecret, p.id);
-      await this.refreshVideos();
-      this.flash(n ? `Imported ${n} from “${p.title}”` : `“${p.title}” already in your library`, "ok");
-    } catch (e) { this.flash(String(e), "err"); }
-  }
-
   private get current() { return this.videos.find((v) => v.id === this.currentId) ?? null; }
 
   private onTick(t: number, d: number) {
@@ -538,9 +533,42 @@ export class App extends LitElement {
     this.seek(((e.clientX - r.left) / r.width) * this.dur);
   }
   private async removeVideo(id: string) {
+    let pls: PlaylistRef[] = [];
+    try { pls = await api.videoPlaylists(id); } catch { /* offline / not connected */ }
+    let alsoRemove = false;
+    if (pls.length) {
+      try {
+        alsoRemove = await confirmDialog(
+          `Also remove it from your YouTube playlist${pls.length > 1 ? "s" : ""}: ${pls.map((p) => p.playlist_title).join(", ")}?`,
+          { title: "Remove from playlist?", kind: "warning" });
+      } catch { /* dialog unavailable */ }
+    }
     await api.deleteVideo(id);
+    if (alsoRemove) {
+      for (const p of pls) {
+        try { await api.googleRemovePlaylistItem(this.settings.gClientId, this.settings.gClientSecret, p.playlist_id, id, p.item_id); }
+        catch (e) { this.flash(String(e), "err"); }
+      }
+      this.flash("Removed from playlist", "ok");
+    }
     if (this.currentId === id) { this.currentId = null; this.notes = []; }
+    this.plItems = this.plItems.map((x) => (x.video_id === id ? { ...x, in_library: false } : x));
     await this.refreshVideos();
+  }
+  private async openPlaylist(p: GPlaylist) {
+    if (this.plFilter?.id === p.id) { this.plFilter = null; this.plItems = []; return; }
+    this.plFilter = p; this.tagFilter = null; this.libView = "all"; this.plItems = []; this.plLoading = true;
+    try { this.plItems = await api.googleSyncPlaylist(this.settings.gClientId, this.settings.gClientSecret, p.id, p.title); }
+    catch (e) { this.flash(String(e), "err"); this.plFilter = null; }
+    this.plLoading = false;
+  }
+  private async togglePlItem(it: PlaylistItem) {
+    try {
+      if (it.in_library) { await api.deleteVideo(it.video_id); if (this.currentId === it.video_id) this.deselect(); }
+      else await api.upsertVideo(it.video_id, `https://youtu.be/${it.video_id}`);
+      this.plItems = this.plItems.map((x) => (x.video_id === it.video_id ? { ...x, in_library: !it.in_library } : x));
+      await this.refreshVideos();
+    } catch (e) { this.flash(String(e), "err"); }
   }
   private toggleVideo(id: string, url: string) {
     if (id === this.currentId) this.deselect();
@@ -591,11 +619,11 @@ export class App extends LitElement {
           </div>
           ${!this.folds.lib ? html`
             <button class="sidebar-item ${this.libView === "all" && !this.tagFilter ? "on" : ""}"
-              @click=${() => { this.libView = "all"; this.tagFilter = null; }}>
+              @click=${() => { this.libView = "all"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">${I.film}</span><span class="si-label">All videos</span><span class="count">${this.videos.length}</span>
             </button>
             <button class="sidebar-item ${this.libView === "transcript" ? "on" : ""}"
-              @click=${() => { this.libView = "transcript"; this.tagFilter = null; }}>
+              @click=${() => { this.libView = "transcript"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">${I.captions}</span><span class="si-label">With transcript</span><span class="count">${transcriptCount}</span>
             </button>` : nothing}
         </div>
@@ -605,7 +633,7 @@ export class App extends LitElement {
           </button>
           ${!this.folds.tags ? tags.map((t) => html`
             <button class="sidebar-item ${this.tagFilter === t ? "on" : ""}"
-              @click=${() => (this.tagFilter = this.tagFilter === t ? null : t)}>
+              @click=${() => { this.plFilter = null; this.tagFilter = this.tagFilter === t ? null : t; }}>
               <span class="si-icon tag-hash">#</span><span class="si-label">${t}</span>
               <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
             </button>`) : nothing}
@@ -615,12 +643,12 @@ export class App extends LitElement {
             <span class="chev ${this.folds.pl ? "" : "open"}">${I.chev}</span> Playlists
           </button>
           ${!this.folds.pl ? this.gplaylists.map((p) => html`
-            <button class="sidebar-item" title=${`Import “${p.title}” (${p.count})`} @click=${() => this.importGPlaylist(p)}>
+            <button class="sidebar-item ${this.plFilter?.id === p.id ? "on" : ""}" title=${`Browse “${p.title}” (${p.count})`} @click=${() => this.openPlaylist(p)}>
               <span class="si-icon">${I.list}</span><span class="si-label">${p.title}</span><span class="count">${p.count}</span>
             </button>`) : nothing}
         </div>` : nothing}
         <div class="lib">
-          ${vids.length ? vids.map((v) => html`
+          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v) => html`
             <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""}" @click=${() => this.toggleVideo(v.id, v.url)}>
               <input class="lc-check" type="checkbox" title="Select" .checked=${this.selected.has(v.id)}
                 @click=${(e: Event) => e.stopPropagation()} @change=${() => this.toggleSelect(v.id)} />
@@ -920,6 +948,24 @@ export class App extends LitElement {
     </div></div>`;
   }
 
+  private renderPlaylistBrowse() {
+    if (this.plLoading) return html`<div class="empty-lib">Loading “${this.plFilter?.title}”…</div>`;
+    return html`
+      <div class="pl-head">
+        <span class="si-label" title=${this.plFilter?.title ?? ""}>${this.plFilter?.title}</span>
+        <button class="linkbtn" @click=${() => { this.plFilter = null; this.plItems = []; }}>Close</button>
+      </div>
+      ${this.plItems.length ? this.plItems.map((it) => html`
+        <div class="plcard ${it.video_id === this.currentId ? "active" : ""}" @click=${() => this.loadVideo(it.video_id)}>
+          <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${it.video_id}/mqdefault.jpg`}
+            @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
+          <div class="meta"><div class="t" title=${it.title}>${it.title}</div></div>
+          <button class="pl-toggle ${it.in_library ? "in" : ""}" title=${it.in_library ? "In your library — click to remove" : "Add to library"}
+            @click=${(e: Event) => { e.stopPropagation(); this.togglePlItem(it); }}>${it.in_library ? I.check : I.plus}</button>
+        </div>`) : html`<div class="empty-lib">This playlist is empty or unavailable.</div>`}
+    `;
+  }
+
   private renderFindReplace() {
     return html`<div class="overlay" @click=${() => (this.findReplaceOpen = false)} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Find and replace" @click=${(e: Event) => e.stopPropagation()}>
@@ -1040,6 +1086,18 @@ export class App extends LitElement {
     .danger:hover { background:color-mix(in srgb, var(--err), black 12%); border-color:color-mix(in srgb, var(--err), black 12%); }
     .pill { padding:1px 7px; border-radius:999px; background:var(--tint); color:var(--accent); font-size:9.5px; }
     .empty-lib { color:var(--fg-faded); font-size:12px; padding:6px 16px; }
+    .pl-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 8px 6px; }
+    .pl-head .si-label { font-size:12px; color:var(--fg-muted); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .plcard { display:flex; gap:9px; align-items:center; padding:6px; border-radius:var(--r-sm); cursor:pointer; transition:background .12s; }
+    .plcard:hover { background:var(--hover); }
+    .plcard.active { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
+    .plcard .thumb { width:58px; height:33px; border-radius:5px; object-fit:cover; background:#000; flex:0 0 auto; }
+    .plcard .meta { min-width:0; flex:1; }
+    .plcard .t { font-size:12.5px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .pl-toggle { flex:0 0 auto; width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; border:1px solid var(--border); background:var(--bg-elevated); color:var(--fg-muted); cursor:pointer; }
+    .pl-toggle:hover { border-color:var(--accent); color:var(--accent); }
+    .pl-toggle.in { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); }
+    .pl-toggle.in:hover { background:color-mix(in srgb, var(--accent), black 10%); color:var(--accent-fg); }
     .section { border-bottom:1px solid var(--border-subtle); padding:2px 8px 6px; }
     .sec-head { width:100%; display:flex; align-items:center; gap:6px; background:none; border:none; padding:8px 8px 4px; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); cursor:pointer; }
     .sec-head:hover { background:none; color:var(--fg-muted); }
