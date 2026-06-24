@@ -41,6 +41,8 @@ const I = {
   captions: svg`<svg viewBox="0 0 24 24" class="i"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11h3M7 14h6M14 11h3"/></svg>`,
   list: svg`<svg viewBox="0 0 24 24" class="i"><path d="M4 6h11M4 12h11M4 18h7M17 13l4 2-4 2z"/></svg>`,
   check: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12l5 5L20 7"/></svg>`,
+  eye: svg`<svg viewBox="0 0 24 24" class="i"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  eyeOff: svg`<svg viewBox="0 0 24 24" class="i"><path d="M3 3l18 18M10.6 10.6a3 3 0 004.2 4.2M9.9 5.1A9.6 9.6 0 0112 5c6 0 10 7 10 7a17 17 0 01-3.1 3.9M6.1 6.1A17 17 0 002 12s4 7 10 7a9.6 9.6 0 003.9-.8"/></svg>`,
   min: svg`<svg viewBox="0 0 24 24" class="i"><path d="M5 12h14"/></svg>`,
   max: svg`<svg viewBox="0 0 24 24" class="i"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
   copy: svg`<svg viewBox="0 0 24 24" class="i"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -60,7 +62,7 @@ function themeLabel(slug: string): string {
   return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
-interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; }
+interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; }
 type Editing = { id?: string; t: number; draft: string } | null;
 
 @customElement("ytnt-app")
@@ -194,6 +196,12 @@ export class App extends LitElement {
   private async loadGPlaylists() {
     try { this.gplaylists = await api.googlePlaylists(this.settings.gClientId, this.settings.gClientSecret); }
     catch (e) { this.flash(String(e), "err"); }
+  }
+  private togglePlaylistHidden(id: string) {
+    const h = this.settings.hiddenPlaylists;
+    const next = h.includes(id) ? h.filter((x) => x !== id) : [...h, id];
+    this.setSetting("hiddenPlaylists", next);
+    if (this.plFilter && next.includes(this.plFilter.id)) { this.plFilter = null; this.plItems = []; }
   }
   private get current() { return this.videos.find((v) => v.id === this.currentId) ?? null; }
 
@@ -664,10 +672,22 @@ export class App extends LitElement {
             </button>`) : nothing}
         </div>` : nothing}
         ${this.googleConnected && this.gplaylists.length ? html`<div class="section">
-          <button class="sec-head" @click=${() => this.toggleFold("pl")}>
-            <span class="chev ${this.folds.pl ? "" : "open"}">${I.chev}</span> Playlists
-          </button>
-          ${!this.folds.pl ? this.gplaylists.map((p) => html`
+          <div class="sec-head-row">
+            <button class="sec-head" @click=${() => this.toggleFold("pl")}>
+              <span class="chev ${this.folds.pl ? "" : "open"}">${I.chev}</span> Playlists
+            </button>
+            <details class="menu pl-gear">
+              <summary class="sort-btn" title="Show / hide playlists">${I.gear}</summary>
+              <div class="menu-pop">
+                ${this.gplaylists.map((p) => {
+                  const hidden = this.settings.hiddenPlaylists.includes(p.id);
+                  return html`<button class=${hidden ? "pl-hidden" : ""} title=${hidden ? "Hidden — click to show" : "Shown — click to hide"}
+                    @click=${(e: Event) => { e.stopPropagation(); this.togglePlaylistHidden(p.id); }}>${hidden ? I.eyeOff : I.eye}<span class="grow">${p.title}</span></button>`;
+                })}
+              </div>
+            </details>
+          </div>
+          ${!this.folds.pl ? this.gplaylists.filter((p) => !this.settings.hiddenPlaylists.includes(p.id)).map((p) => html`
             <button class="sidebar-item ${this.plFilter?.id === p.id ? "on" : ""}" title=${`Browse “${p.title}” (${p.count})`} @click=${() => this.openPlaylist(p)}>
               <span class="si-icon">${I.list}</span><span class="si-label">${p.title}</span><span class="count">${p.count}</span>
             </button>`) : nothing}
@@ -1175,6 +1195,9 @@ export class App extends LitElement {
     .sec-head-row .sec-head { flex:1; }
     .sort-btn { background:none; border:none; color:var(--fg-faded); font-size:10px; text-transform:uppercase; letter-spacing:.06em; cursor:pointer; padding:8px 8px 4px; white-space:nowrap; }
     .sort-btn:hover { color:var(--accent); background:none; }
+    .pl-gear > summary { list-style:none; display:inline-flex; cursor:pointer; }
+    .pl-gear > summary::-webkit-details-marker { display:none; }
+    .menu-pop button.pl-hidden { color:var(--fg-faded); }
     .chev { display:inline-flex; transition:transform var(--ui-motion-fast); }
     .chev .i { width:13px; height:13px; }
     .chev.open { transform:rotate(90deg); }
@@ -1363,7 +1386,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "" };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [] };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }
