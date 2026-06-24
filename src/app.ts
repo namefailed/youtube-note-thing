@@ -1579,7 +1579,7 @@ export class App extends LitElement {
     .sidebar-item .si-icon .i { width:15px; height:15px; }
     .sidebar-item .si-icon.tag-hash { color:var(--accent); font-size:14px; font-weight:700; }
     .sidebar-item.on .si-icon, .sidebar-item:hover .si-icon { color:var(--accent); }
-    .sidebar-item .si-label { flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .sidebar-item .si-label { flex:0 1 auto; min-width:0; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .sidebar-item .count { margin-left:auto; flex:0 0 auto; min-width:20px; padding:1px 7px; border-radius:999px; text-align:center; font-size:11px; line-height:15px; font-variant-numeric:tabular-nums; color:var(--fg-faded); background:color-mix(in srgb, var(--fg-faded) 10%, transparent); }
     .sidebar-item.on .count, .sidebar-item:hover .count { color:color-mix(in srgb, var(--accent) 75%, var(--fg-default)); background:color-mix(in srgb, var(--accent) 16%, transparent); }
     .sidebar-item .dot { width:8px; height:8px; border-radius:999px; background:var(--accent); opacity:.85; flex:0 0 auto; }
