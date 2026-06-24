@@ -124,8 +124,49 @@ struct Segment {
     #[serde(default)] speaker: Option<String>,
 }
 
+/// Is `exe` found in any PATH directory? Cheap (no process spawn).
+fn on_path(exe: &str) -> bool {
+    let Ok(path) = std::env::var("PATH") else { return false };
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    path.split(sep)
+        .any(|dir| !dir.is_empty() && std::path::Path::new(dir).join(exe).exists())
+}
+
+/// Locate the Phoneme CLI. ytnt shells out to it, so it must find the binary even
+/// when it isn't on PATH: an explicit `PHONEME_BIN` override wins, then PATH, then
+/// a cargo install, then the usual local dev build. Falls back to bare "phoneme"
+/// so a genuine miss still surfaces as "not found" rather than a bogus path.
+fn resolve_phoneme() -> String {
+    if let Ok(p) = std::env::var("PHONEME_BIN") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return p.to_string();
+        }
+    }
+    let exe = if cfg!(windows) { "phoneme.exe" } else { "phoneme" };
+    if on_path(exe) {
+        return "phoneme".to_string();
+    }
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if !home.is_empty() {
+        for rel in [
+            format!(".cargo/bin/{exe}"),
+            format!("Projects/dev/phoneme/target/release/{exe}"),
+            format!("Projects/dev/phoneme/target/debug/{exe}"),
+        ] {
+            let cand = std::path::Path::new(&home).join(rel);
+            if cand.exists() {
+                return cand.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "phoneme".to_string()
+}
+
 fn run_phoneme(args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("phoneme")
+    let out = std::process::Command::new(resolve_phoneme())
         .args(args)
         .output()
         .map_err(|e| format!("Phoneme CLI not found ({e})"))?;
@@ -138,7 +179,7 @@ fn run_phoneme(args: &[&str]) -> Result<String, String> {
 /// Is the Phoneme CLI present and its daemon reachable?
 #[tauri::command]
 fn phoneme_available() -> bool {
-    std::process::Command::new("phoneme")
+    std::process::Command::new(resolve_phoneme())
         .args(["--json", "list", "--limit", "1"])
         .output()
         .map(|o| o.status.success())
@@ -178,7 +219,7 @@ struct PhonemeProbe {
 /// degrades loudly instead of showing blank panels.
 #[tauri::command]
 fn phoneme_probe() -> PhonemeProbe {
-    let version_out = std::process::Command::new("phoneme")
+    let version_out = std::process::Command::new(resolve_phoneme())
         .arg("version")
         .output();
     let (present, version) = match &version_out {
