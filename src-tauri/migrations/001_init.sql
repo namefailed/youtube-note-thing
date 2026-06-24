@@ -1,4 +1,4 @@
--- youtube-note-thing schema. Three tables.
+-- youtube-note-thing schema. Three tables; see plans/ARCHITECTURE.md.
 CREATE TABLE videos (
     id            TEXT PRIMARY KEY,           -- YouTube video id
     title         TEXT NOT NULL DEFAULT '',
