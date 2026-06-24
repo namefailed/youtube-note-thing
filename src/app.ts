@@ -1297,8 +1297,10 @@ export class App extends LitElement {
     .np-title:hover { color:var(--accent); }
     .np-title-edit { font-weight:650; font-size:15.5px; letter-spacing:-.01em; width:100%; background:var(--bg-deep); border:1px solid var(--accent); border-radius:var(--r-sm); padding:2px 8px; color:var(--fg-default); }
     .np-meta { font-size:12px; color:var(--fg-faded); margin-top:1px; }
-    .np-link { color:var(--fg-muted); font-size:12px; cursor:pointer; flex:0 0 auto; }
-    .np-link:hover { color:var(--accent); }
+    .np-link { font-size:12px; cursor:pointer; flex:0 0 auto; }
+    /* Subtle, out-of-the-way: override the accent-pill treatment for now-playing actions. */
+    .np-actions .ghost { height:auto; border:none; box-shadow:none; background:transparent; color:var(--fg-faded); padding:5px 8px; }
+    .np-actions .ghost:hover { border:none; background:var(--hover); color:var(--fg-default); }
     #playerWrap { position:relative; background:#000; border:1px solid var(--border-subtle); border-radius:var(--r); overflow:hidden; aspect-ratio:16/9; width:100%; max-width:calc(68vh * 16 / 9); align-self:center; flex:0 0 auto; box-shadow:0 10px 34px rgba(0,0,0,.45); }
     #player { width:100%; height:100%; }
     .fs-btn { position:absolute; bottom:10px; right:10px; z-index:4; display:inline-flex; padding:7px; border-radius:var(--r-sm);
