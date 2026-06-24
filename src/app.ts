@@ -1,7 +1,7 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion } from "./api";
+import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion } from "./api";
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
@@ -103,7 +103,8 @@ export class App extends LitElement {
   @state() private transcriptBusy = false;
   @state() private phonemeRec: PhonemeRec | null = null;
   @state() private phonemeVersions: TranscriptVersion[] = [];
-  @state() private transcriptView: "transcript" | "compare" | "summary" = "transcript";
+  @state() private chapters: Chapter[] = [];
+  @state() private transcriptView: "transcript" | "chapters" | "compare" | "summary" = "transcript";
   @state() private cmpLeft = 0;
   @state() private cmpRight = 0;
   private pollTimer = 0;
@@ -227,7 +228,7 @@ export class App extends LitElement {
     this.currentId = id;
     this.editing = null; this.filter = ""; this.dur = 0; this.lastSaved = 0; this.selectedId = null;
     this.view = "notes"; this.segments = [];
-    this.phonemeRec = null; this.phonemeVersions = []; this.transcriptView = "transcript"; clearTimeout(this.pollTimer);
+    this.phonemeRec = null; this.phonemeVersions = []; this.chapters = []; this.transcriptView = "transcript"; clearTimeout(this.pollTimer);
     await api.upsertVideo(id, url ?? `https://youtu.be/${id}`);
     await this.refreshVideos();
     this.player?.load(id, this.current?.last_pos_secs ?? 0);
@@ -440,6 +441,7 @@ export class App extends LitElement {
         this.phonemeVersions = await api.phonemeVersions(rec);
         this.cmpLeft = 0; this.cmpRight = Math.max(0, this.phonemeVersions.length - 1);
       } catch { this.phonemeVersions = []; }
+      try { this.chapters = await api.phonemeChapters(rec); } catch { this.chapters = []; }
     } else {
       clearTimeout(this.pollTimer);
       this.pollTimer = window.setTimeout(() => this.refreshPhoneme(), 4000);
@@ -1029,10 +1031,12 @@ export class App extends LitElement {
     return html`<div class="notes tpane">
       <div class="tview-tabs">
         <button class="tab ${this.transcriptView === "transcript" ? "on" : ""}" @click=${() => (this.transcriptView = "transcript")}>Transcript</button>
+        ${this.chapters.length ? html`<button class="tab ${this.transcriptView === "chapters" ? "on" : ""}" @click=${() => (this.transcriptView = "chapters")}>Chapters (${this.chapters.length})</button>` : nothing}
         <button class="tab ${this.transcriptView === "compare" ? "on" : ""}" @click=${() => (this.transcriptView = "compare")}>Compare${this.phonemeVersions.length > 1 ? ` (${this.phonemeVersions.length})` : ""}</button>
         <button class="tab ${this.transcriptView === "summary" ? "on" : ""}" @click=${() => (this.transcriptView = "summary")}>Summary</button>
       </div>
       ${this.transcriptView === "summary" ? this.renderSummary()
+        : this.transcriptView === "chapters" ? this.renderChapters()
         : this.transcriptView === "compare" ? this.renderCompare()
         : this.renderSegments()}
     </div>`;
@@ -1045,6 +1049,15 @@ export class App extends LitElement {
     return html`<div class="transcript">
       ${this.segments.map((s) => html`<button class="seg" @click=${() => this.seek(s.start_ms / 1000)}>
         <span class="ts">${formatTime(s.start_ms / 1000)}</span><span class="grow">${s.speaker ? html`<b class="spk">${s.speaker}</b> ` : nothing}${s.text}</span></button>`)}
+    </div>`;
+  }
+  private renderChapters() {
+    if (!this.chapters.length) return html`<div class="empty">No chapters for this recording.</div>`;
+    return html`<div class="chapters">
+      ${this.chapters.map((c) => html`<button class="chap" @click=${() => this.seek(c.start_ms / 1000)}>
+        <span class="ts">${formatTime(c.start_ms / 1000)}</span>
+        <span class="grow"><span class="chap-title">${c.title}</span>${c.summary ? html`<span class="chap-sum">${c.summary}</span>` : nothing}</span>
+      </button>`)}
     </div>`;
   }
   private renderCompare() {
@@ -1345,6 +1358,13 @@ export class App extends LitElement {
     .seg:hover { background:var(--hover); }
     .seg .ts { background:none; padding:0; }
     .seg .spk { color:var(--accent); font-weight:600; font-size:11px; }
+    .chapters { display:flex; flex-direction:column; gap:1px; }
+    .chap { display:flex; gap:10px; align-items:baseline; text-align:left; width:100%; background:transparent; border:1px solid transparent; border-radius:6px; padding:7px 9px; color:var(--fg-default); line-height:1.45; }
+    .chap:hover { background:var(--hover); }
+    .chap .ts { background:none; padding:0; flex:0 0 auto; }
+    .chap .grow { display:flex; flex-direction:column; gap:2px; }
+    .chap-title { font-weight:600; }
+    .chap-sum { color:var(--fg-muted); font-size:12px; }
     /* Phoneme transcript pane: Transcript / Compare / Summary */
     .tpane { display:flex; flex-direction:column; gap:10px; }
     .tview-tabs { display:flex; gap:2px; background:var(--bg-deep); border:1px solid var(--border); border-radius:var(--r-sm); padding:2px; align-self:flex-start; position:sticky; top:0; z-index:1; }

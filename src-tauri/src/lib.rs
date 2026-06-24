@@ -177,6 +177,34 @@ fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
     Ok(segs)
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Chapter {
+    #[serde(default)] start_ms: i64,
+    #[serde(default)] end_ms: i64,
+    #[serde(default)] title: String,
+    #[serde(default)] summary: Option<String>,
+}
+
+/// A recording's stored auto-chapters (read-only: `--show` never triggers the
+/// LLM chapter-generation step, so this is a passive view). Empty when the
+/// recording has no chapters — a normal state, not an error.
+#[tauri::command]
+fn phoneme_chapters(id: String) -> Result<Vec<Chapter>, String> {
+    let out = run_phoneme(&["--json", "chapters", &id, "--show"])?;
+    let mut chapters = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Chapter>(line) {
+            Ok(c) => chapters.push(c),
+            Err(e) => eprintln!("phoneme_chapters: skipping unparseable line: {e}"),
+        }
+    }
+    Ok(chapters)
+}
+
 #[derive(serde::Serialize)]
 struct PhonemeHit {
     id: String,
@@ -876,6 +904,7 @@ pub fn run() {
             phoneme_available,
             phoneme_import,
             phoneme_segments,
+            phoneme_chapters,
             phoneme_search,
             phoneme_recording,
             phoneme_versions,
