@@ -81,7 +81,7 @@ export class App extends LitElement {
   private toastN = 0;
   @state() private selectedId: string | null = null;
   @state() private tagFilter: string | null = null;
-  @state() private libView: "all" | "transcript" = "all";
+  @state() private libView: "all" | "transcript" | "untagged" | "tagged" = "all";
   @state() private folds: Record<string, boolean> = {};
   @state() private cheatOpen = false;
   @state() private findReplaceOpen = false;
@@ -635,7 +635,12 @@ export class App extends LitElement {
     const filtered = this.displayed();
     const tags = this.allTags();
     const transcriptCount = this.videos.filter((v) => v.ext_ref).length;
-    let vids = this.libView === "transcript" ? this.videos.filter((v) => v.ext_ref) : this.videos;
+    const untaggedCount = this.videos.filter((v) => v.tags.length === 0).length;
+    const taggedCount = this.videos.length - untaggedCount;
+    let vids = this.videos;
+    if (this.libView === "transcript") vids = vids.filter((v) => v.ext_ref);
+    else if (this.libView === "untagged") vids = vids.filter((v) => v.tags.length === 0);
+    else if (this.libView === "tagged") vids = vids.filter((v) => v.tags.length > 0);
     if (this.tagFilter) vids = vids.filter((v) => v.tags.includes(this.tagFilter!));
     vids = [...vids];
     if (!this.sortDesc) vids.reverse();          // list arrives newest-first; reverse → oldest-first
@@ -664,12 +669,21 @@ export class App extends LitElement {
           <button class="sec-head" @click=${() => this.toggleFold("tags")}>
             <span class="chev ${this.folds.tags ? "" : "open"}">${I.chev}</span> Tags
           </button>
-          ${!this.folds.tags ? tags.map((t) => html`
+          ${!this.folds.tags ? html`
+            <button class="sidebar-item ${this.libView === "untagged" && !this.tagFilter ? "on" : ""}"
+              @click=${() => { this.libView = "untagged"; this.tagFilter = null; this.plFilter = null; }}>
+              <span class="si-icon">#</span><span class="si-label">Untagged</span><span class="count">${untaggedCount}</span>
+            </button>
+            <button class="sidebar-item ${this.libView === "tagged" && !this.tagFilter ? "on" : ""}"
+              @click=${() => { this.libView = "tagged"; this.tagFilter = null; this.plFilter = null; }}>
+              <span class="si-icon tag-hash">#</span><span class="si-label">Tagged</span><span class="count">${taggedCount}</span>
+            </button>
+            ${tags.map((t) => html`
             <button class="sidebar-item ${this.tagFilter === t ? "on" : ""}"
-              @click=${() => { this.plFilter = null; this.tagFilter = this.tagFilter === t ? null : t; }}>
+              @click=${() => { this.plFilter = null; this.libView = "all"; this.tagFilter = this.tagFilter === t ? null : t; }}>
               <span class="si-icon tag-hash">#</span><span class="si-label">${t}</span>
               <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
-            </button>`) : nothing}
+            </button>`)}` : nothing}
         </div>` : nothing}
         ${this.googleConnected && this.gplaylists.length ? html`<div class="section">
           <div class="sec-head-row">
