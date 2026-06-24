@@ -56,7 +56,9 @@ export class Player {
         },
       });
     } else {
-      this.yt.loadVideoById({ videoId, startSeconds });
+      // cue (not load) so switching videos doesn't auto-play — it sits at the
+      // resume point until the user hits play.
+      this.yt.cueVideoById({ videoId, startSeconds });
     }
   }
 
