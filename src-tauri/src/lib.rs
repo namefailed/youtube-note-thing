@@ -217,6 +217,126 @@ fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
     Ok(hits)
 }
 
+// Phoneme's daemon named pipe (NDJSON). The full transcript-version chain is only
+// exposed here — not via the CLI or REST — so we talk to it directly for variants.
+fn phoneme_ipc(req: serde_json::Value) -> Result<serde_json::Value, String> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut pipe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(r"\\.\pipe\phoneme-daemon")
+        .map_err(|e| format!("Phoneme daemon not reachable ({e})"))?;
+    let line = serde_json::to_string(&req).map_err(err)? + "\n";
+    pipe.write_all(line.as_bytes()).map_err(err)?;
+    pipe.flush().ok();
+    let mut reader = BufReader::new(pipe);
+    let mut resp = String::new();
+    reader.read_line(&mut resp).map_err(err)?;
+    let v: serde_json::Value = serde_json::from_str(resp.trim()).map_err(err)?;
+    match v.get("status").and_then(|s| s.as_str()) {
+        Some("ok") => Ok(v.get("value").cloned().unwrap_or(serde_json::Value::Null)),
+        _ => Err(v
+            .pointer("/value/message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Phoneme IPC error")
+            .to_string()),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct PhonemeEntity { kind: String, value: String }
+#[derive(serde::Serialize)]
+struct PhonemeTask { text: String, done: bool }
+#[derive(serde::Serialize)]
+struct PhonemeRec {
+    status: String,
+    title: String,
+    summary: String,
+    model: String,
+    language: String,
+    duration_ms: i64,
+    confidence: Option<f64>,
+    entities: Vec<PhonemeEntity>,
+    tasks: Vec<PhonemeTask>,
+}
+
+/// Full recording row (status to poll + summary / entities / tasks / metadata).
+#[tauri::command]
+fn phoneme_recording(id: String) -> Result<PhonemeRec, String> {
+    let out = run_phoneme(&["--json", "show", &id])?;
+    let v: serde_json::Value = serde_json::from_str(out.trim()).map_err(err)?;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let entities = v
+        .get("entities")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|e| PhonemeEntity {
+                    kind: e.get("kind").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    value: e.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let tasks = v
+        .get("tasks")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|t| PhonemeTask {
+                    text: t.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    done: t.get("done").and_then(|x| x.as_bool()).unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(PhonemeRec {
+        status: s("status"),
+        title: s("title"),
+        summary: s("summary"),
+        model: s("model"),
+        language: s("detected_language"),
+        duration_ms: v.get("duration_ms").and_then(|x| x.as_i64()).unwrap_or(0),
+        confidence: v.get("mean_confidence").and_then(|x| x.as_f64()),
+        entities,
+        tasks,
+    })
+}
+
+#[derive(serde::Serialize)]
+struct TranscriptVersion {
+    idx: i64,
+    label: String,
+    model: String,
+    text: String,
+}
+
+/// Every transcript in the compounding chain (raw ASR → each pipeline step → live)
+/// for side-by-side comparison. Via the daemon pipe (the only surface that has it).
+#[tauri::command]
+fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> {
+    let val = phoneme_ipc(serde_json::json!({ "type": "list_transcript_versions", "id": id }))?;
+    let arr = val.as_array().cloned().unwrap_or_default();
+    Ok(arr
+        .iter()
+        .map(|v| {
+            let idx = v.get("idx").and_then(|x| x.as_i64()).unwrap_or(0);
+            let label = v
+                .get("label")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| if idx == 0 { "Raw (ASR)".into() } else { format!("Step {idx}") });
+            TranscriptVersion {
+                idx,
+                label,
+                model: v.get("model").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            }
+        })
+        .collect())
+}
+
 /// Best-effort standalone transcript: fetch YouTube's own caption track via the
 /// InnerTube player endpoint (no auth, no yt-dlp). Fragile by nature — many videos
 /// have no captions, and YouTube changes this — so failures are normal; the UI then
@@ -757,6 +877,8 @@ pub fn run() {
             phoneme_import,
             phoneme_segments,
             phoneme_search,
+            phoneme_recording,
+            phoneme_versions,
             youtube_captions,
             import_youtube_playlist,
             google_status,

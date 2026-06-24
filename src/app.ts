@@ -1,7 +1,7 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef } from "./api";
+import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion } from "./api";
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, formatTime, applyOffset, notesToMarkdown, tsLink } from "./lib";
 import { renderMarkdown } from "./markdown";
@@ -99,6 +99,12 @@ export class App extends LitElement {
   @state() private rate = 1;
   @state() private segments: Segment[] = [];
   @state() private transcriptBusy = false;
+  @state() private phonemeRec: PhonemeRec | null = null;
+  @state() private phonemeVersions: TranscriptVersion[] = [];
+  @state() private transcriptView: "transcript" | "compare" | "summary" = "transcript";
+  @state() private cmpLeft = 0;
+  @state() private cmpRight = 0;
+  private pollTimer = 0;
   @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
 
   private player: Player | null = null;
@@ -212,6 +218,7 @@ export class App extends LitElement {
     this.currentId = id;
     this.editing = null; this.filter = ""; this.dur = 0; this.lastSaved = 0; this.selectedId = null;
     this.view = "notes"; this.segments = [];
+    this.phonemeRec = null; this.phonemeVersions = []; this.transcriptView = "transcript"; clearTimeout(this.pollTimer);
     await api.upsertVideo(id, url ?? `https://youtu.be/${id}`);
     await this.refreshVideos();
     this.player?.load(id, this.current?.last_pos_secs ?? 0);
@@ -403,17 +410,35 @@ export class App extends LitElement {
   }
   private async sendToPhoneme() {
     const v = this.current; if (!v) return;
-    this.transcriptBusy = true; this.flash("Sending to Phoneme… (download + queue)");
-    try { const rec = await api.phonemeImport(v.url); await this.setRecId(rec); this.flash("Queued — transcribing in Phoneme"); }
+    this.transcriptBusy = true; this.flash("Sending to Phoneme — downloading + queuing…");
+    try { const rec = await api.phonemeImport(v.url); await this.setRecId(rec); await this.refreshPhoneme(); this.flash("Queued — transcribing in Phoneme", "ok"); }
     catch (e) { this.flash(String(e), "err"); }
     finally { this.transcriptBusy = false; }
   }
-  private async loadTranscript() {
-    const rec = this.recId(); if (!rec) return;
-    this.transcriptBusy = true;
-    try { this.segments = await api.phonemeSegments(rec); if (!this.segments.length) this.flash("Still transcribing… try again shortly"); }
-    catch (e) { this.flash(String(e), "err"); }
-    finally { this.transcriptBusy = false; }
+  private openTranscript() {
+    this.view = "transcript";
+    if (this.recId() && !this.phonemeRec) this.refreshPhoneme();
+  }
+  /** Poll the recording until the pipeline is terminal, then pull segments + versions. */
+  private async refreshPhoneme() {
+    const rec = this.recId(); if (!rec) { clearTimeout(this.pollTimer); return; }
+    try { this.phonemeRec = await api.phonemeRecording(rec); }
+    catch (e) { clearTimeout(this.pollTimer); this.flash(String(e), "err"); return; }
+    if (/^(done|.*_failed|cancelled)$/.test(this.phonemeRec.status)) {
+      clearTimeout(this.pollTimer);
+      try { this.segments = await api.phonemeSegments(rec); } catch { /* may have no timing */ }
+      try {
+        this.phonemeVersions = await api.phonemeVersions(rec);
+        this.cmpLeft = 0; this.cmpRight = Math.max(0, this.phonemeVersions.length - 1);
+      } catch { this.phonemeVersions = []; }
+    } else {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = window.setTimeout(() => this.refreshPhoneme(), 4000);
+    }
+  }
+  private stageLabel(s: string): string {
+    const m: Record<string, string> = { queued: "Queued…", transcribing: "Transcribing…", cleaning_up: "Cleaning up the transcript…", summarizing: "Summarizing…", tagging: "Tagging…", hook_running: "Running hooks…", cancelled: "Cancelled" };
+    return m[s] ?? (s.endsWith("_failed") ? "A step failed — the transcript may still be usable" : s);
   }
   private async loadCaptions() {
     if (!this.currentId) return;
@@ -726,7 +751,7 @@ export class App extends LitElement {
         <div class="toolbar ${this.currentId ? "" : "hidden"}">
           <div class="tabs">
             <button class="tab ${this.view === "notes" ? "on" : ""}" @click=${() => (this.view = "notes")}>Notes</button>
-            <button class="tab ${this.view === "transcript" ? "on" : ""}" @click=${() => (this.view = "transcript")}>Transcript</button>
+            <button class="tab ${this.view === "transcript" ? "on" : ""}" @click=${() => this.openTranscript()}>Transcript</button>
           </div>
           ${this.view === "notes" ? html`
             <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">Alt+N</span></button>
@@ -743,7 +768,7 @@ export class App extends LitElement {
               </div>
             </details>` : nothing}
           ` : html`
-            ${this.segments.length ? html`<button @click=${() => (this.segments = [])}>Sources</button>` : nothing}
+            ${this.recId() ? html`<button class="ghost" title="Refresh from Phoneme" aria-label="Refresh from Phoneme" @click=${() => this.refreshPhoneme()}>${I.replace}</button>` : nothing}
           `}
           ${this.currentId ? html`<details class="menu">
             <summary class="ghost" title="Playback speed">${this.rate}× ${I.caret}</summary>
@@ -927,25 +952,73 @@ export class App extends LitElement {
 
   private renderTranscript() {
     if (!this.currentId) return html`<div class="notes"><div class="empty">Load a video first.</div></div>`;
-    if (this.segments.length) {
-      return html`<div class="notes transcript">
-        ${this.segments.map((s) => html`<button class="seg" @click=${() => this.seek(s.start_ms / 1000)}>
-          <span class="ts">${formatTime(s.start_ms / 1000)}</span><span class="grow">${s.text}</span></button>`)}
-      </div>`;
-    }
-    return html`<div class="notes"><div class="empty src">
-      ${this.recId()
-        ? html`<button class="primary" @click=${() => this.loadTranscript()} ?disabled=${this.transcriptBusy}>Load Phoneme transcript</button>`
-        : this.phonemeOk
-          ? html`<button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Send to Phoneme</button>`
+    const rec = this.recId();
+    // Not linked to Phoneme yet — offer to transcribe (or YouTube captions).
+    if (!rec) {
+      return html`<div class="notes"><div class="empty src">
+        ${this.phonemeOk
+          ? html`<button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Transcribe with Phoneme</button>`
           : nothing}
-      <button @click=${() => this.loadCaptions()} ?disabled=${this.transcriptBusy}>Load YouTube captions</button>
-      <div class="muted sm">${this.transcriptBusy
-        ? "Working…"
-        : this.phonemeOk
-          ? "Phoneme gives a cleaned, reliable transcript. YouTube captions are a quick best-effort fallback."
-          : "Phoneme not detected — captions are best-effort and many videos have none. Install Phoneme for reliable transcripts."}</div>
-    </div></div>`;
+        <button @click=${() => this.loadCaptions()} ?disabled=${this.transcriptBusy}>Load YouTube captions</button>
+        <div class="muted sm">${this.transcriptBusy ? "Working…"
+          : this.phonemeOk
+            ? "Phoneme transcribes the audio and gives cleaned text, side-by-side pipeline versions, a summary, entities and tasks."
+            : "Phoneme not detected — captions are best-effort. Install Phoneme for full transcripts, summaries and more."}</div>
+      </div></div>`;
+    }
+    // Linked but not finished — show the live pipeline stage.
+    const st = this.phonemeRec?.status ?? "";
+    const terminal = /^(done|.*_failed|cancelled)$/.test(st);
+    if (!st || !terminal) {
+      return html`<div class="notes"><div class="empty src">
+        <div class="pl-stage">${st && st !== "done" ? html`<span class="spin"></span>` : nothing} ${st ? this.stageLabel(st) : "Checking Phoneme…"}</div>
+        <button @click=${() => this.refreshPhoneme()}>Refresh</button>
+        <button @click=${() => this.loadCaptions()}>YouTube captions meanwhile</button>
+      </div></div>`;
+    }
+    // Done — Transcript / Compare / Summary views.
+    return html`<div class="notes tpane">
+      <div class="tview-tabs">
+        <button class="tab ${this.transcriptView === "transcript" ? "on" : ""}" @click=${() => (this.transcriptView = "transcript")}>Transcript</button>
+        <button class="tab ${this.transcriptView === "compare" ? "on" : ""}" @click=${() => (this.transcriptView = "compare")}>Compare${this.phonemeVersions.length > 1 ? ` (${this.phonemeVersions.length})` : ""}</button>
+        <button class="tab ${this.transcriptView === "summary" ? "on" : ""}" @click=${() => (this.transcriptView = "summary")}>Summary</button>
+      </div>
+      ${this.transcriptView === "summary" ? this.renderSummary()
+        : this.transcriptView === "compare" ? this.renderCompare()
+        : this.renderSegments()}
+    </div>`;
+  }
+  private renderSegments() {
+    if (!this.segments.length) {
+      const t = this.phonemeVersions[this.phonemeVersions.length - 1]?.text;
+      return t ? html`<div class="tflow">${t}</div>` : html`<div class="empty">No transcript text yet.</div>`;
+    }
+    return html`<div class="transcript">
+      ${this.segments.map((s) => html`<button class="seg" @click=${() => this.seek(s.start_ms / 1000)}>
+        <span class="ts">${formatTime(s.start_ms / 1000)}</span><span class="grow">${s.speaker ? html`<b class="spk">${s.speaker}</b> ` : nothing}${s.text}</span></button>`)}
+    </div>`;
+  }
+  private renderCompare() {
+    const vs = this.phonemeVersions;
+    if (vs.length < 1) return html`<div class="empty">No alternate versions — this recording ran a plain transcribe with no extra pipeline steps.</div>`;
+    const picker = (val: number, on: (i: number) => void) => html`<select @change=${(e: Event) => on(+(e.target as HTMLSelectElement).value)}>
+      ${vs.map((v, i) => html`<option value=${i} ?selected=${i === val}>${v.label}${v.model ? ` · ${v.model}` : ""}</option>`)}
+    </select>`;
+    return html`<div class="cmp">
+      <div class="cmp-col"><div class="cmp-head">${picker(this.cmpLeft, (i) => (this.cmpLeft = i))}</div><div class="cmp-text">${vs[this.cmpLeft]?.text}</div></div>
+      <div class="cmp-col"><div class="cmp-head">${picker(this.cmpRight, (i) => (this.cmpRight = i))}</div><div class="cmp-text">${vs[this.cmpRight]?.text}</div></div>
+    </div>`;
+  }
+  private renderSummary() {
+    const r = this.phonemeRec;
+    if (!r) return html`<div class="empty">No data.</div>`;
+    const meta = [r.model && `model ${r.model}`, r.language && `lang ${r.language}`, r.confidence != null ? `conf ${Math.round(r.confidence * 100)}%` : ""].filter(Boolean).join(" · ");
+    return html`<div class="sumpane">
+      ${r.summary ? html`<div class="sblock"><h4>Summary</h4><p>${r.summary}</p></div>` : html`<div class="muted sm">No summary generated.</div>`}
+      ${r.entities.length ? html`<div class="sblock"><h4>Entities</h4><div class="ents">${r.entities.map((e) => html`<span class="ent" title=${e.kind}>${e.value}</span>`)}</div></div>` : nothing}
+      ${r.tasks.length ? html`<div class="sblock"><h4>Tasks</h4><ul class="tasks">${r.tasks.map((t) => html`<li class=${t.done ? "done" : ""}>${t.text}</li>`)}</ul></div>` : nothing}
+      ${meta ? html`<div class="muted sm smeta">${meta}</div>` : nothing}
+    </div>`;
   }
 
   private renderPlaylistBrowse() {
@@ -1208,10 +1281,31 @@ export class App extends LitElement {
     .tab { background:transparent; border:none; color:var(--fg-muted); padding:5px 12px; border-radius:6px; }
     .tab:hover { color:var(--fg-default); background:transparent; }
     .tab.on { background:var(--bg-elevated); color:var(--fg-default); }
-    .transcript { gap:1px; }
+    .transcript { gap:1px; display:flex; flex-direction:column; }
     .seg { display:flex; gap:10px; align-items:baseline; text-align:left; width:100%; background:transparent; border:1px solid transparent; border-radius:6px; padding:6px 9px; color:var(--fg-default); line-height:1.5; }
     .seg:hover { background:var(--hover); }
     .seg .ts { background:none; padding:0; }
+    .seg .spk { color:var(--accent); font-weight:600; font-size:11px; }
+    /* Phoneme transcript pane: Transcript / Compare / Summary */
+    .tpane { display:flex; flex-direction:column; gap:10px; }
+    .tview-tabs { display:flex; gap:2px; background:var(--bg-deep); border:1px solid var(--border); border-radius:var(--r-sm); padding:2px; align-self:flex-start; position:sticky; top:0; z-index:1; }
+    .tview-tabs .tab { padding:4px 12px; }
+    .tflow { white-space:pre-wrap; line-height:1.6; padding:4px 2px; }
+    .pl-stage { display:flex; align-items:center; gap:9px; font-weight:550; color:var(--fg-default); }
+    .spin { width:14px; height:14px; border-radius:50%; border:2px solid var(--border); border-top-color:var(--accent); animation:spin 0.8s linear infinite; flex:0 0 auto; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .cmp { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .cmp-col { display:flex; flex-direction:column; gap:6px; min-width:0; }
+    .cmp-head select { width:100%; }
+    .cmp-text { white-space:pre-wrap; line-height:1.55; font-size:12.5px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:10px 12px; }
+    .sumpane { display:flex; flex-direction:column; gap:14px; }
+    .sblock h4 { margin:0 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--accent); font-weight:700; }
+    .sblock p { margin:0; line-height:1.6; }
+    .ents { display:flex; flex-wrap:wrap; gap:6px; }
+    .ent { padding:2px 9px; border-radius:999px; background:var(--tint); color:var(--accent); font-size:12px; }
+    .tasks { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:4px; }
+    .tasks li.done { color:var(--fg-faded); text-decoration:line-through; }
+    .smeta { border-top:1px solid var(--border-subtle); padding-top:8px; }
 
     .notes { display:flex; flex-direction:column; gap:8px; padding-right:3px; }
     .note { display:flex; gap:12px; align-items:flex-start; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--r); padding:12px 14px; transition:border-color .12s, box-shadow .12s; }

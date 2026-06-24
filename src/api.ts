@@ -17,6 +17,8 @@ export interface SearchHit {
 }
 export interface Segment { start_ms: number; end_ms: number; text: string; speaker: string | null; }
 export interface PhonemeHit { id: string; title: string; snippet: string; }
+export interface PhonemeRec { status: string; title: string; summary: string; model: string; language: string; duration_ms: number; confidence: number | null; entities: { kind: string; value: string }[]; tasks: { text: string; done: boolean }[]; }
+export interface TranscriptVersion { idx: number; label: string; model: string; text: string; }
 export interface GPlaylist { id: string; title: string; count: number; }
 export interface PlaylistItem { video_id: string; item_id: string; title: string; position: number; in_library: boolean; }
 export interface PlaylistRef { playlist_id: string; playlist_title: string; item_id: string; }
@@ -50,6 +52,8 @@ export const api = {
   phonemeSearch: (query: string) => invoke<PhonemeHit[]>("phoneme_search", { query }),
   youtubeCaptions: (videoId: string, lang?: string) =>
     invoke<Segment[]>("youtube_captions", { videoId, lang: lang ?? null }),
+  phonemeRecording: (id: string) => invoke<PhonemeRec>("phoneme_recording", { id }),
+  phonemeVersions: (id: string) => invoke<TranscriptVersion[]>("phoneme_versions", { id }),
   importYoutubePlaylist: (playlistId: string) =>
     invoke<number>("import_youtube_playlist", { playlistId }),
   googleStatus: () => invoke<boolean>("google_status"),
