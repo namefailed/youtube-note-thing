@@ -39,3 +39,9 @@ npm-debug.log*
 
 # Screenshots
 screenshots/
+
+# AI/session scratch: plans, handoffs, working notes. Only the README marker is tracked.
+archive_internal/*
+!archive_internal/README.md
+scratch/
+.aider*
