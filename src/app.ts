@@ -105,6 +105,15 @@ export class App extends LitElement {
     try { return JSON.parse(localStorage.getItem("ytnt.tagColors") || "{}"); } catch { return {}; }
   })();
   private prevDaemonOk = false;
+  @state() private tagMgrOpen = false;
+  @state() private editingTag: string | null = null;   // detail chip whose editor popover is open
+  @state() private editTagName = "";                    // working rename value
+  // No Phoneme preset palette exists to copy (its only color set is the rainbow
+  // dot); use the 14 Catppuccin Mocha accents the default #cba6f7 belongs to.
+  private static readonly PALETTE = [
+    "#f38ba8", "#eba0ac", "#fab387", "#f9e2af", "#a6e3a1", "#94e2d5", "#89dceb",
+    "#74c7ec", "#89b4fa", "#b4befe", "#cba6f7", "#f5c2e7", "#f2cdcd", "#f5e0dc",
+  ];
   @state() private phonemePresent = false;
   @state() private phonemeCompatible = true;
   @state() private phonemeVersion = "";
@@ -132,10 +141,10 @@ export class App extends LitElement {
   private settings: Settings = loadSettings();
 
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
+    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
-    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen) return;
+    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen) return;
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
     if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
@@ -417,14 +426,15 @@ export class App extends LitElement {
     if (!panel) return [];
     return [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(isVisible);
   }
-  private openModal(which: "search" | "settings") {
+  private openModal(which: "search" | "settings" | "tagmgr") {
     this.lastFocus = ((this.renderRoot as ShadowRoot).activeElement as HTMLElement) ?? null;
     if (which === "search") { this.searchResults = []; this.phonemeHits = []; this.searchOpen = true; }
+    else if (which === "tagmgr") this.tagMgrOpen = true;
     else this.settingsOpen = true;
     this.updateComplete.then(() => this.focusables()[0]?.focus());
   }
   private closeModal() {
-    this.searchOpen = false; this.settingsOpen = false;
+    this.searchOpen = false; this.settingsOpen = false; this.tagMgrOpen = false;
     const target = this.lastFocus; this.lastFocus = null;
     this.updateComplete.then(() => { try { target?.focus(); } catch { /* trigger gone */ } });
   }
@@ -755,6 +765,34 @@ export class App extends LitElement {
     const v = this.current; if (!v) return;
     await api.setVideoTags(v.id, v.tags.filter((x) => x !== name)); await this.refreshVideos();
   }
+  private startTagEdit(name: string, e: Event) {
+    e.stopPropagation();
+    this.editingTag = this.editingTag === name ? null : name;
+    this.editTagName = name;
+    this.updateComplete.then(() => (this.renderRoot.querySelector(".tag-edit-name") as HTMLInputElement)?.focus());
+  }
+  private cancelTagEdit() { this.editingTag = null; }
+  /** Rename a tag everywhere — ytnt has no tags table, so rewrite every video's
+   *  tags array and migrate the local color override. Local only; Phoneme's
+   *  catalog is untouched (no write route). */
+  private async renameTag(oldName: string, raw: string) {
+    const next = raw.trim();
+    this.editingTag = null;
+    if (!next || next === oldName) return;
+    for (const v of this.videos) {
+      if (!v.tags.includes(oldName)) continue;
+      await api.setVideoTags(v.id, [...new Set(v.tags.map((x) => (x === oldName ? next : x)))]);
+    }
+    const ok = oldName.toLowerCase(), nk = next.toLowerCase();
+    if (this.localTagColors[ok] && ok !== nk) {
+      const { [ok]: c, ...rest } = this.localTagColors;
+      this.localTagColors = { ...rest, [nk]: c };
+      localStorage.setItem("ytnt.tagColors", JSON.stringify(this.localTagColors));
+    }
+    if (this.tagFilter === oldName) this.tagFilter = next;
+    await this.refreshVideos();
+    this.flash("Tag renamed", "ok");
+  }
 
   render() {
     const filtered = this.displayed();
@@ -770,7 +808,7 @@ export class App extends LitElement {
     vids = [...vids];
     if (!this.sortDesc) vids.reverse();          // list arrives newest-first; reverse → oldest-first
     vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
-    const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen;
+    const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen;
     return html`
       <header class="appbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
         <button class="ham" title="Toggle filters" aria-label="Toggle filters" @click=${() => this.toggleSidebar()}>${I.menu}</button>
@@ -802,22 +840,30 @@ export class App extends LitElement {
             </button>` : nothing}
         </div>
         ${tags.length ? html`<div class="section">
-          <button class="sec-head" @click=${() => this.toggleFold("tags")}>
-            <span class="chev ${this.folds.tags ? "" : "open"}">${I.chev}</span> Tags
-          </button>
+          <div class="sec-head-row">
+            <button class="sec-head" @click=${() => this.toggleFold("tags")}>
+              <span class="chev ${this.folds.tags ? "" : "open"}">${I.chev}</span> Tags
+            </button>
+            <button class="sort-btn" title="Manage tags" aria-label="Manage tags" @click=${() => this.openModal("tagmgr")}>${I.gear}</button>
+          </div>
           ${!this.folds.tags ? html`
             <button class="sidebar-item ${this.libView === "untagged" && !this.tagFilter ? "on" : ""}"
               @click=${() => { this.libView = "untagged"; this.tagFilter = null; this.plFilter = null; }}>
-              <span class="si-icon">#</span><span class="si-label">Untagged</span><span class="count">${untaggedCount}</span>
+              <span class="si-icon">#</span><span class="si-label">Untagged</span>
+              <span class="tag-dot tag-dot-none" title="Videos with no tags"></span>
+              <span class="count">${untaggedCount}</span>
             </button>
             <button class="sidebar-item ${this.libView === "tagged" && !this.tagFilter ? "on" : ""}"
               @click=${() => { this.libView = "tagged"; this.tagFilter = null; this.plFilter = null; }}>
-              <span class="si-icon tag-hash">#</span><span class="si-label">Tagged</span><span class="count">${taggedCount}</span>
+              <span class="si-icon tag-hash">#</span><span class="si-label">Tagged</span>
+              <span class="tag-dot tag-dot-rainbow" title="Videos with at least one tag"></span>
+              <span class="count">${taggedCount}</span>
             </button>
             ${tags.map((t) => html`
             <button class="sidebar-item ${this.tagFilter === t ? "on" : ""}"
               @click=${() => { this.plFilter = null; this.libView = "all"; this.tagFilter = this.tagFilter === t ? null : t; }}>
-              <span class="si-icon"><span class="tag-dot" style="background:${this.dotColor(t)}"></span></span><span class="si-label">${t}</span>
+              <span class="si-icon tag-hash">#</span><span class="si-label">${t}</span>
+              <span class="tag-dot" style="background:${this.dotColor(t)}"></span>
               <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
             </button>`)}` : nothing}
         </div>` : nothing}
@@ -901,7 +947,32 @@ export class App extends LitElement {
         </div>
 
         ${this.current ? html`<div class="vtags">
-          ${this.current.tags.map((t) => html`<span class="chip tag" style="${this.chipStyle(t)}"><label class="tag-swatch" title="Recolor tag" style="background:${this.dotColor(t)}"><input type="color" .value=${safeTagColor(this.tagColorOf(t), DEFAULT_TAG_COLOR)} @input=${(e: Event) => this.setTagColor(t, (e.target as HTMLInputElement).value)} /></label>${t}<button class="x" title="Remove tag" aria-label="Remove tag ${t}" @click=${() => this.removeTag(t)}>×</button></span>`)}
+          ${this.current.tags.map((t) => {
+            const editing = this.editingTag === t;
+            return html`
+            <span class="chip tag tag-chip-wrap ${editing ? "editing" : ""}" style="${this.chipStyle(t)}">
+              <span class="tag-chip-body" title="Click to rename or recolor" @click=${(e: Event) => this.startTagEdit(t, e)}>${t}</span>
+              <button class="x" title="Remove tag" aria-label="Remove tag ${t}" @click=${(e: Event) => { e.stopPropagation(); this.removeTag(t); }}>×</button>
+              ${editing ? html`
+              <div class="tag-edit-pop" @click=${(e: Event) => e.stopPropagation()}
+                @keydown=${(e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); this.cancelTagEdit(); } }}>
+                <input class="tag-edit-name" type="text" .value=${this.editTagName} placeholder="Tag name"
+                  @input=${(e: Event) => this.editTagName = (e.target as HTMLInputElement).value}
+                  @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { e.preventDefault(); this.renameTag(t, (e.target as HTMLInputElement).value); } }} />
+                <div class="tag-swatches">
+                  ${App.PALETTE.map((c) => html`<button class="tag-sw ${safeTagColor(this.tagColorOf(t)).toLowerCase() === c ? "sel" : ""}"
+                    style="background:${c}" title=${c} @click=${() => this.setTagColor(t, c)}></button>`)}
+                  <label class="tag-sw tag-sw-custom" title="Any color…">
+                    <input type="color" .value=${safeTagColor(this.tagColorOf(t), DEFAULT_TAG_COLOR)}
+                      @input=${(e: Event) => this.setTagColor(t, (e.target as HTMLInputElement).value)} /></label>
+                </div>
+                <div class="tag-edit-row">
+                  <button class="tag-mgr-save" @click=${() => this.renameTag(t, this.editTagName)}>Save</button>
+                  <button class="tag-mgr-cancel" @click=${() => this.cancelTagEdit()}>Cancel</button>
+                </div>
+              </div>` : nothing}
+            </span>`;
+          })}
           <input class="tag-add" type="text" placeholder="+ tag" aria-label="Add tag"
             @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { this.addTag((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ""; } }} />
         </div>` : nothing}
@@ -952,6 +1023,7 @@ export class App extends LitElement {
       ${this.settingsOpen ? this.renderSettings() : nothing}
       ${this.cheatOpen ? this.renderCheat() : nothing}
       ${this.findReplaceOpen ? this.renderFindReplace() : nothing}
+      ${this.tagMgrOpen ? this.renderTagManager() : nothing}
       ${this.selected.size ? html`<div class="bulkbar" style=${this.bulkPos
           ? `left:${this.bulkPos.x}px; top:${this.bulkPos.y}px;`
           : `left:50%; bottom:24px; transform:translateX(-50%);`}>
@@ -1027,6 +1099,32 @@ export class App extends LitElement {
     </div>`;
   }
 
+  private renderTagManager() {
+    const tags = this.allTags();
+    return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+      <div class="panel" role="dialog" aria-modal="true" aria-label="Tag manager" @click=${(e: Event) => e.stopPropagation()}>
+        <div class="panel-head"><span>Tag manager</span>
+          <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
+        <div class="help muted sm" style="margin:2px 0 10px">Rename and recolor your tags. Changes are local to this app; colors mirror from Phoneme, which stays the catalog authority (delete and merge live there).</div>
+        ${tags.length ? html`<div class="tag-mgr-list">
+          ${tags.map((t) => {
+            const uses = this.videos.filter((v) => v.tags.includes(t)).length;
+            return html`<div class="tag-mgr-row">
+              <label class="tag-mgr-swatch" title="Recolor" style="background:${this.dotColor(t)}">
+                <input type="color" .value=${safeTagColor(this.tagColorOf(t), DEFAULT_TAG_COLOR)}
+                  @input=${(e: Event) => this.setTagColor(t, (e.target as HTMLInputElement).value)} /></label>
+              <input class="tag-mgr-name" type="text" .value=${t} aria-label="Rename ${t}"
+                @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                @change=${(e: Event) => this.renameTag(t, (e.target as HTMLInputElement).value)} />
+              ${uses
+                ? html`<span class="tag-mgr-badge in-use" title="Attached to ${uses} video${uses === 1 ? "" : "s"}">${uses} use${uses === 1 ? "" : "s"}</span>`
+                : html`<span class="tag-mgr-badge orphaned" title="Not on any video">unused</span>`}
+            </div>`;
+          })}
+        </div>` : html`<div class="muted sm" style="padding:14px 0;text-align:center">No tags yet. Add tags from a video's detail panel.</div>`}
+      </div>
+    </div>`;
+  }
   private renderSettings() {
     return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Settings" @click=${(e: Event) => e.stopPropagation()}>
@@ -1390,7 +1488,9 @@ export class App extends LitElement {
     .sidebar-item .count { margin-left:auto; flex:0 0 auto; min-width:20px; padding:1px 7px; border-radius:999px; text-align:center; font-size:11px; line-height:15px; font-variant-numeric:tabular-nums; color:var(--fg-faded); background:color-mix(in srgb, var(--fg-faded) 10%, transparent); }
     .sidebar-item.on .count, .sidebar-item:hover .count { color:color-mix(in srgb, var(--accent) 75%, var(--fg-default)); background:color-mix(in srgb, var(--accent) 16%, transparent); }
     .sidebar-item .dot { width:8px; height:8px; border-radius:999px; background:var(--accent); opacity:.85; flex:0 0 auto; }
-    .sidebar-item .tag-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
+    .sidebar-item .tag-dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; margin-right:6px; }
+    .sidebar-item .tag-dot-none { background:var(--fg-faded); opacity:.45; }
+    .sidebar-item .tag-dot-rainbow { background:conic-gradient(from 0deg, #ff5d5d, #ffae4a, #ffe24a, #5dd85d, #4ab6ff, #8a7bff, #ff6ad5, #ff5d5d); }
     .tagbar { display:flex; flex-wrap:wrap; gap:5px; padding:0 12px 8px; }
     .chip { font:inherit; font-size:11.5px; padding:3px 9px; border-radius:999px; cursor:pointer; background:var(--bg-elevated);
       border:1px solid var(--border); color:var(--fg-muted); display:inline-flex; align-items:center; gap:5px; transition:color .12s, border-color .12s; }
@@ -1398,8 +1498,42 @@ export class App extends LitElement {
     .chip.on { background:var(--tint); border-color:var(--accent); color:var(--accent); }
     .vtags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:flex-end; margin-top:-4px; }
     .chip.tag { color:var(--fg-default); cursor:default; background:var(--tag-color, rgba(203,166,247,0.12)); }
-    .tag-swatch { width:11px; height:11px; border-radius:50%; flex:0 0 auto; position:relative; cursor:pointer; border:1px solid color-mix(in srgb, var(--fg-default) 25%, transparent); }
-    .tag-swatch input { position:absolute; inset:0; width:100%; height:100%; opacity:0; padding:0; border:0; cursor:pointer; }
+    .tag-chip-wrap { position:relative; }
+    .tag-chip-body { cursor:pointer; }
+    .chip.tag.editing { outline:1px solid color-mix(in srgb, var(--fg-default) 35%, transparent); }
+    /* Chip rename/recolor popover — anchored to the right edge (vtags are right-aligned). */
+    .tag-edit-pop { position:absolute; top:calc(100% + 6px); right:0; z-index:70; width:212px;
+      display:flex; flex-direction:column; gap:8px; padding:10px; cursor:default;
+      background:var(--bg-elevated); border:var(--popup-border, 1px solid var(--border-subtle));
+      border-radius:10px; box-shadow:0 12px 34px rgba(0,0,0,.5); }
+    .tag-edit-name { width:100%; padding:6px 9px; border-radius:7px; font-size:12.5px;
+      background:var(--bg-surface); border:1px solid var(--border-subtle); color:var(--fg-default); }
+    .tag-edit-name:focus { outline:none; border-color:var(--accent); }
+    .tag-swatches { display:grid; grid-template-columns:repeat(8, 1fr); gap:5px; }
+    .tag-sw { width:20px; height:20px; padding:0; border-radius:50%; cursor:pointer; position:relative;
+      border:1px solid color-mix(in srgb, var(--fg-default) 20%, transparent); }
+    .tag-sw:hover { transform:scale(1.12); }
+    .tag-sw.sel { outline:2px solid var(--fg-default); outline-offset:1px; }
+    .tag-sw-custom { overflow:hidden; background:conic-gradient(from 0deg, #ff5d5d, #ffae4a, #ffe24a, #5dd85d, #4ab6ff, #8a7bff, #ff6ad5, #ff5d5d); }
+    .tag-sw-custom input { position:absolute; inset:0; width:100%; height:100%; opacity:0; padding:0; border:0; cursor:pointer; }
+    .tag-edit-row { display:flex; gap:6px; justify-content:flex-end; }
+    .tag-mgr-save, .tag-mgr-cancel { padding:4px 12px; border-radius:6px; font-size:12px; cursor:pointer; }
+    .tag-mgr-save { background:var(--accent); border:1px solid var(--accent); color:var(--accent-fg); font-weight:600; }
+    .tag-mgr-cancel { background:var(--bg-surface); border:1px solid var(--border-subtle); color:var(--fg-default); }
+    /* Tag manager modal */
+    .tag-mgr-list { display:flex; flex-direction:column; gap:6px; max-height:55vh; overflow-y:auto; }
+    .tag-mgr-row { display:flex; align-items:center; gap:9px; padding:7px 9px; background:var(--bg-deep);
+      border:1px solid var(--border-subtle); border-radius:8px; }
+    .tag-mgr-swatch { width:14px; height:14px; border-radius:50%; flex:0 0 auto; position:relative; cursor:pointer;
+      border:1px solid color-mix(in srgb, var(--fg-default) 18%, transparent); }
+    .tag-mgr-swatch input { position:absolute; inset:0; width:100%; height:100%; opacity:0; padding:0; border:0; cursor:pointer; }
+    .tag-mgr-name { flex:1; min-width:0; background:var(--bg-surface); border:1px solid var(--border-subtle);
+      border-radius:6px; padding:5px 9px; font-size:13px; color:var(--fg-default); }
+    .tag-mgr-name:focus { outline:none; border-color:var(--accent); }
+    .tag-mgr-badge { flex:0 0 auto; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.5px;
+      padding:2px 6px; border-radius:4px; white-space:nowrap; }
+    .tag-mgr-badge.in-use { background:rgba(166,227,161,0.12); color:var(--ok); border:1px solid rgba(166,227,161,0.25); }
+    .tag-mgr-badge.orphaned { background:rgba(255,255,255,0.04); color:var(--fg-faded); border:1px solid var(--border-subtle); }
     .chip .x { background:none; border:none; padding:0; margin:0; color:var(--fg-faded); cursor:pointer; font-size:14px; line-height:1; }
     .chip .x:hover { color:var(--err); }
     .tag-add { width:84px; padding:4px 10px; border-radius:999px; font-size:11.5px; background:var(--bg-deep); }
