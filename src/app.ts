@@ -818,6 +818,18 @@ export class App extends LitElement {
       await this.refreshVideos();
     } catch (e) { this.flash(String(e), "err"); }
   }
+  /** Remove a video from the OPEN YouTube playlist (not the library). For the
+   *  "done taking notes — drop it from my to-do playlist" workflow. */
+  private async removeFromPlaylist(it: PlaylistItem) {
+    const pl = this.plFilter;
+    if (!pl) return;
+    try {
+      await api.googleRemovePlaylistItem(this.settings.gClientId, this.settings.gClientSecret, pl.id, it.video_id, it.item_id);
+      this.plItems = this.plItems.filter((x) => x.item_id !== it.item_id);
+      this.gplaylists = this.gplaylists.map((g) => (g.id === pl.id ? { ...g, count: Math.max(0, g.count - 1) } : g));
+      this.flash(`Removed from “${pl.title}”`, "ok");
+    } catch (e) { this.flash(String(e), "err"); }
+  }
   private toggleVideo(id: string, url: string) {
     if (id === this.currentId) this.deselect();
     else this.loadVideo(id, url);
@@ -1435,8 +1447,10 @@ export class App extends LitElement {
           <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${it.video_id}/mqdefault.jpg`}
             @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
           <div class="meta"><div class="t" title=${it.title}>${it.title}</div></div>
-          <button class="pl-toggle ${it.in_library ? "in" : ""}" title=${it.in_library ? "In your library — click to remove" : "Add to library"}
+          <button class="pl-toggle ${it.in_library ? "in" : ""}" title=${it.in_library ? "In your library — click to remove from library" : "Add to library"}
             @click=${(e: Event) => { e.stopPropagation(); this.togglePlItem(it); }}>${it.in_library ? I.check : I.plus}</button>
+          <button class="pl-remove" title=${`Remove from “${this.plFilter?.title ?? "playlist"}” (keeps it in your library)`}
+            @click=${(e: Event) => { e.stopPropagation(); this.removeFromPlaylist(it); }}>${I.close}</button>
         </div>`) : html`<div class="empty-lib">This playlist is empty or unavailable.</div>`}
     `;
   }
@@ -1583,6 +1597,8 @@ export class App extends LitElement {
     .pl-toggle:hover { border-color:var(--accent); color:var(--accent); }
     .pl-toggle.in { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); }
     .pl-toggle.in:hover { background:color-mix(in srgb, var(--accent), black 10%); color:var(--accent-fg); }
+    .pl-remove { flex:0 0 auto; width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; border:1px solid transparent; background:none; color:var(--fg-faded); cursor:pointer; }
+    .pl-remove:hover { color:var(--err); background:color-mix(in srgb, var(--err) 14%, transparent); }
     .section { border-bottom:1px solid var(--border-subtle); padding:2px 8px 6px; }
     .sec-head { width:100%; display:flex; align-items:center; gap:6px; background:none; border:none; padding:8px 8px 4px; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); cursor:pointer; }
     .sec-head:hover { background:none; color:var(--fg-muted); }
