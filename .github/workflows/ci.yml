@@ -34,3 +34,23 @@ jobs:
       - run: npm ci
       - run: npm run build # generate_context! embeds ../dist at compile time
       - run: cargo build --manifest-path src-tauri/Cargo.toml
+
+  docs:
+    name: Rustdoc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run build # frontend dist must exist for the Tauri macro to compile
+      - name: Build docs (deny warnings)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --manifest-path src-tauri/Cargo.toml
