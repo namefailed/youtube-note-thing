@@ -428,12 +428,15 @@ export class App extends LitElement {
     if (!this.player || !this.currentId) return;
     const t = applyOffset(this.player.currentTime, this.settings.offset);
     if (this.settings.autopause) this.player.pause();
-    // In our fullscreen, the notes pane is hidden — capture via an overlay that
+    // In fullscreen the notes pane isn't visible — capture via an overlay that
     // lives inside #playerWrap so it renders on top of the fullscreened video.
-    const pw = this.renderRoot.querySelector("#playerWrap");
-    if (document.fullscreenElement && document.fullscreenElement === pw) {
+    // NOTE: the Fullscreen API retargets document.fullscreenElement to the shadow
+    // host (never the inner #playerWrap), so an `=== pw` check is always false in
+    // shadow DOM. #playerWrap is the only thing we ever fullscreen, so a truthy
+    // fullscreenElement means we're in the video.
+    if (document.fullscreenElement) {
       this.fsNote = { t };
-      this.updateComplete.then(() => (this.renderRoot.querySelector("#fsNoteInput") as HTMLInputElement)?.focus());
+      this.updateComplete.then(() => (this.renderRoot.querySelector("#fsNoteInput") as HTMLTextAreaElement)?.focus());
       return;
     }
     this.editing = { t, draft: "" };
@@ -1063,14 +1066,21 @@ export class App extends LitElement {
         <div id="playerWrap" class=${this.currentId ? "" : "hidden"}>
           <div id="player"></div>
           ${this.currentId ? html`<button class="fs-btn" title="Fullscreen (F) — add notes without leaving" @click=${() => this.toggleFullscreen()}>${I.expand}</button>` : nothing}
-          ${this.fsNote ? html`<div class="fs-note">
-            <span class="ts">${formatTime(this.fsNote.t)}</span>
-            <input id="fsNoteInput" type="text" placeholder="Note at this moment — Enter to save, Esc to cancel"
-              @keydown=${(e: KeyboardEvent) => {
-                if (e.key === "Enter") { e.preventDefault(); this.fsCommit((e.target as HTMLInputElement).value); }
-                else if (e.key === "Escape") { e.preventDefault(); this.fsCancel(); }
-              }} />
-            <button class="primary" @click=${() => this.fsCommit((this.renderRoot.querySelector("#fsNoteInput") as HTMLInputElement)?.value || "")}>Add</button>
+          ${this.fsNote ? html`<div class="fs-note" @click=${(e: Event) => { if (e.target === e.currentTarget) this.fsCancel(); }}>
+            <div class="fs-note-card">
+              <div class="fs-note-head"><span class="ts">${formatTime(this.fsNote.t)}</span><span class="muted sm">Note at this moment</span></div>
+              <textarea id="fsNoteInput" placeholder="Write a note… Markdown supported."
+                @keydown=${(e: KeyboardEvent) => {
+                  if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.key.toLowerCase() === "s")) { e.preventDefault(); this.fsCommit((e.target as HTMLTextAreaElement).value); }
+                  else if (e.key === "Escape") { e.preventDefault(); this.fsCancel(); }
+                }}></textarea>
+              <div class="fs-note-foot">
+                <span class="muted sm">Ctrl+Enter to save · Esc to cancel</span>
+                <span class="grow"></span>
+                <button class="ghost" @click=${() => this.fsCancel()}>Cancel</button>
+                <button class="primary" @click=${() => this.fsCommit((this.renderRoot.querySelector("#fsNoteInput") as HTMLTextAreaElement)?.value || "")}>Add note</button>
+              </div>
+            </div>
           </div>` : nothing}
         </div>
         <div id="timeline" class=${this.currentId ? "" : "hidden"} title="click to seek" @click=${(e: MouseEvent) => this.timelineClick(e)}>
@@ -1738,11 +1748,15 @@ export class App extends LitElement {
       background:color-mix(in srgb, var(--bg-deep) 55%, transparent); border:1px solid transparent; color:#fff; opacity:0; cursor:pointer; transition:opacity var(--ui-motion-fast); }
     #playerWrap:hover .fs-btn { opacity:.85; }
     .fs-btn:hover { opacity:1; background:color-mix(in srgb, var(--bg-deep) 80%, transparent); }
-    .fs-note { position:absolute; left:50%; bottom:24px; transform:translateX(-50%); z-index:6; display:flex; align-items:center; gap:8px;
-      background:color-mix(in srgb, var(--bg-deep) 92%, transparent); border:1px solid var(--accent); border-radius:var(--r); padding:8px 10px;
-      box-shadow:0 14px 44px rgba(0,0,0,.6); width:min(680px, 82%); backdrop-filter:blur(6px); }
-    .fs-note input { flex:1; }
-    .fs-note .ts { color:var(--accent); font-variant-numeric:tabular-nums; font-size:12px; flex:0 0 auto; padding-left:2px; }
+    .fs-note { position:absolute; inset:0; z-index:6; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.45); backdrop-filter:blur(2px); }
+    .fs-note-card { width:min(560px, 88%); display:flex; flex-direction:column; gap:9px; padding:14px; border-radius:12px;
+      background:var(--bg-elevated); border:1px solid var(--accent); box-shadow:0 20px 56px rgba(0,0,0,.6); }
+    .fs-note-head { display:flex; align-items:baseline; gap:8px; }
+    .fs-note-card .ts { color:var(--accent); font-variant-numeric:tabular-nums; font-weight:600; font-size:13px; }
+    .fs-note-card textarea { width:100%; min-height:92px; resize:vertical; font:inherit; font-size:14px; color:var(--fg-default);
+      background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:8px; padding:9px 11px; }
+    .fs-note-card textarea:focus { outline:none; border-color:var(--accent); }
+    .fs-note-foot { display:flex; align-items:center; gap:8px; }
     #timeline { position:relative; height:10px; background:var(--bg-elevated); border-radius:99px; cursor:pointer; flex:0 0 auto; margin:2px 0; }
     #progress { position:absolute; inset:0 100% 0 0; background:linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent), white 22%)); border-radius:99px; }
     .marker { position:absolute; top:-3px; width:3px; height:16px; background:var(--accent); border-radius:2px; transform:translateX(-50%); box-shadow:0 0 0 2px var(--bg-deep); }
