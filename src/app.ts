@@ -143,6 +143,11 @@ export class App extends LitElement {
   private unlistenPhoneme: (() => void) | null = null;
   @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
   @state() private listOpen = localStorage.getItem("ytnt.list") !== "0";
+  // Resizable pane widths (px), persisted. Drives the grid via --w-sidebar/--w-list.
+  private paneW: { sidebar: number; list: number } = (() => {
+    try { return { sidebar: 220, list: 340, ...JSON.parse(localStorage.getItem("ytnt.paneW") || "{}") }; }
+    catch { return { sidebar: 220, list: 340 }; }
+  })();
 
   private player: Player | null = null;
   private lastSaved = 0;
@@ -320,6 +325,8 @@ export class App extends LitElement {
   }
 
   firstUpdated() {
+    this.style.setProperty("--w-sidebar", `${this.paneW.sidebar}px`);
+    this.style.setProperty("--w-list", `${this.paneW.list}px`);
     this.refreshVideos();
     const el = this.renderRoot.querySelector("#player") as HTMLElement;
     this.player = new Player(el);
@@ -884,6 +891,32 @@ export class App extends LitElement {
     this.listOpen = !this.listOpen;
     localStorage.setItem("ytnt.list", this.listOpen ? "1" : "0");
   }
+  /** Drag a gutter to resize the sidebar / list column; persists on release. */
+  private startResize(which: "sidebar" | "list", e: PointerEvent) {
+    e.preventDefault();
+    const handle = e.currentTarget as HTMLElement;
+    // Capture so the drag keeps tracking over the video iframe; degrade gracefully.
+    try { handle.setPointerCapture(e.pointerId); } catch { /* still works while over the handle */ }
+    handle.classList.add("dragging");
+    const prop = which === "sidebar" ? "--w-sidebar" : "--w-list";
+    const [min, max] = which === "sidebar" ? [150, 420] : [240, 640];
+    const startX = e.clientX;
+    const startW = this.paneW[which];
+    const move = (ev: PointerEvent) => {
+      const w = Math.max(min, Math.min(max, startW + ev.clientX - startX));
+      this.paneW = { ...this.paneW, [which]: w };
+      this.style.setProperty(prop, `${w}px`);
+    };
+    const up = () => {
+      handle.classList.remove("dragging");
+      try { handle.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      localStorage.setItem("ytnt.paneW", JSON.stringify(this.paneW));
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  }
   /** "Fullscreen the video panel": collapse both side columns, or restore them. */
   private toggleFocus() {
     const focused = !this.sidebarOpen && !this.listOpen;
@@ -979,6 +1012,9 @@ export class App extends LitElement {
         <span class="hdot ${this.phonemeOk ? "ok" : this.phonemePresent ? "warn" : ""}" title=${this.phonemeOk ? `Phoneme connected${this.phonemeVersion ? ` (${this.phonemeVersion})` : ""}` : this.phonemePresent ? "Phoneme installed — daemon not responding" : "Phoneme not detected"}></span>
       </header>
 
+      <div class="resizer rz-sidebar" title="Drag to resize" @pointerdown=${(e: PointerEvent) => this.startResize("sidebar", e)}></div>
+      <div class="resizer rz-list" title="Drag to resize" @pointerdown=${(e: PointerEvent) => this.startResize("list", e)}></div>
+
       <aside ?inert=${trapped}>
         <div class="section">
           <div class="sec-head-row">
@@ -1028,7 +1064,7 @@ export class App extends LitElement {
         ${this.googleConnected && this.gplaylists.length ? html`<div class="section">
           <div class="sec-head-row">
             <button class="sec-head" @click=${() => this.toggleFold("pl")}>
-              <span class="chev ${this.folds.pl ? "" : "open"}">${I.chev}</span> Playlists
+              <span class="chev ${this.folds.pl ? "" : "open"}">${I.chev}</span> YT Playlists
             </button>
             <details class="menu pl-gear">
               <summary class="sort-btn" title="Show / hide playlists">${I.gear}</summary>
@@ -1570,14 +1606,24 @@ export class App extends LitElement {
       --tint: color-mix(in srgb, var(--accent) 15%, transparent);
       --hover: color-mix(in srgb, var(--fg-default) 8%, transparent);
       --ui-motion: 200ms; --ui-motion-fast: 120ms;
-      display:grid; grid-template-columns:220px 340px 1fr; grid-template-rows:44px minmax(0,1fr);
+      position:relative;
+      display:grid; grid-template-columns:var(--w-sidebar,220px) var(--w-list,340px) 1fr; grid-template-rows:44px minmax(0,1fr);
       height:100vh; background:var(--bg-deep); color:var(--fg-default);
       font:13.5px/1.55 "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
       -webkit-font-smoothing:antialiased;
     }
-    :host([collapsed]) { grid-template-columns:0 340px 1fr; }
-    :host([nolist]) { grid-template-columns:220px 0 1fr; }
+    :host([collapsed]) { grid-template-columns:0 var(--w-list,340px) 1fr; }
+    :host([nolist]) { grid-template-columns:var(--w-sidebar,220px) 0 1fr; }
     :host([collapsed][nolist]) { grid-template-columns:0 0 1fr; }
+    /* Draggable gutters between the three panes (positioned at the column edges). */
+    .resizer { position:absolute; top:44px; bottom:0; width:8px; transform:translateX(-4px); z-index:30; cursor:col-resize; touch-action:none; }
+    .resizer::after { content:""; position:absolute; inset:0 3px; border-radius:2px; transition:background var(--ui-motion-fast); }
+    .resizer:hover::after, .resizer.dragging::after { background:color-mix(in srgb, var(--accent) 55%, transparent); }
+    .rz-sidebar { left:var(--w-sidebar,220px); }
+    .rz-list { left:calc(var(--w-sidebar,220px) + var(--w-list,340px)); }
+    :host([collapsed]) .rz-sidebar { display:none; }
+    :host([collapsed]) .rz-list { left:var(--w-list,340px); }
+    :host([nolist]) .rz-list { display:none; }
     .hidden { display:none !important; }
     .tb-left { display:flex; align-items:center; }
     @media (prefers-reduced-motion: reduce) { :host { --ui-motion: 0ms; --ui-motion-fast: 0ms; } }
@@ -1887,6 +1933,8 @@ export class App extends LitElement {
       display:flex; justify-content:center; padding-top:11vh; z-index:10; }
     .panel { background:var(--bg-surface); border:var(--popup-border, 1px solid var(--border)); border-radius:14px; box-shadow:0 24px 70px rgba(0,0,0,.6);
       padding:16px; width:min(640px,92vw); max-height:74vh; overflow:auto; display:flex; flex-direction:column; gap:12px; }
+    /* Inset the panel's scrollbar so it clears the 14px rounded corners. */
+    .panel::-webkit-scrollbar-track { margin:14px 0; }
     .panel-head { display:flex; align-items:center; justify-content:space-between; font-weight:650; font-size:15px; }
     .field { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .field>span { color:var(--fg-muted); font-size:13px; }
