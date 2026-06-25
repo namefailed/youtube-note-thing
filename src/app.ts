@@ -1,7 +1,7 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion, type PhonemeProbe } from "./api";
+import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion, type PhonemeProbe, type PhonemeRecipe } from "./api";
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR, mergeTagSets, formatViews, relativeDate } from "./lib";
 import { renderMarkdown } from "./markdown";
@@ -63,7 +63,7 @@ function themeLabel(slug: string): string {
   return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
-interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; }
+interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; phonemeRecipe: string; }
 type Editing = { id?: string; t: number; draft: string } | null;
 
 @customElement("ytnt-app")
@@ -122,6 +122,7 @@ export class App extends LitElement {
     try { return JSON.parse(localStorage.getItem("ytnt.tagSyncBase") || "{}"); } catch { return {}; }
   })();
   @state() private tagSyncing = false;
+  @state() private phonemeRecipes: PhonemeRecipe[] = [];
   @state() private phonemePresent = false;
   @state() private phonemeCompatible = true;
   @state() private phonemeVersion = "";
@@ -213,7 +214,7 @@ export class App extends LitElement {
       this.phonemeCompatible = p.compatible;
       this.phonemeVersion = p.version;
       // Pull Phoneme's tag colors when the daemon (re)appears.
-      if (p.daemon_ok && !this.prevDaemonOk) { this.refreshTagColors(); this.flushPendingTags(); }
+      if (p.daemon_ok && !this.prevDaemonOk) { this.refreshTagColors(); this.flushPendingTags(); this.refreshRecipes(); }
       this.prevDaemonOk = p.daemon_ok;
     } catch {
       this.phonemeOk = false; this.phonemePresent = false; this.prevDaemonOk = false;
@@ -227,6 +228,13 @@ export class App extends LitElement {
       for (const t of tags) if (t.color && /^#[0-9a-fA-F]{3,8}$/.test(t.color)) m[t.name.toLowerCase()] = t.color;
       this.phonemeTagColors = m;
     } catch { /* daemon down — keep whatever colors we already have */ }
+  }
+  private async refreshRecipes() {
+    try { this.phonemeRecipes = await api.phonemeRecipes(); } catch { /* keep what we have */ }
+  }
+  /** Recording-scope recipes — the only ones that apply to a single import. */
+  private recordingRecipes(): PhonemeRecipe[] {
+    return this.phonemeRecipes.filter((r) => r.scope === "recording");
   }
 
   /** Resolved color for a tag, or null (caller uses the theme default tint). */
@@ -615,7 +623,7 @@ export class App extends LitElement {
   private async sendToPhoneme() {
     const v = this.current; if (!v) return;
     this.transcriptBusy = true; this.flash("Sending to Phoneme — downloading + queuing…");
-    try { const rec = await api.phonemeImport(v.url); await this.setRecId(rec); await this.refreshPhoneme(); this.flash("Queued — transcribing in Phoneme", "ok"); }
+    try { const rec = await api.phonemeImport(v.url, this.settings.phonemeRecipe || undefined); await this.setRecId(rec); await this.refreshPhoneme(); this.flash("Queued — transcribing in Phoneme", "ok"); }
     catch (e) { this.flash(String(e), "err"); }
     finally { this.transcriptBusy = false; }
   }
@@ -1380,7 +1388,15 @@ export class App extends LitElement {
       return html`<div class="notes"><div class="empty src">
         ${this.renderCompatNotice()}
         ${this.phonemeOk
-          ? html`<button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Transcribe with Phoneme</button>`
+          ? html`<div class="transcribe-row">
+              <button class="primary" @click=${() => this.sendToPhoneme()} ?disabled=${this.transcriptBusy}>Transcribe with Phoneme</button>
+              ${this.recordingRecipes().length > 1 ? html`<label class="recipe-pick" title="Which Playbook recipe Phoneme runs this transcription through">
+                <span class="muted sm">Recipe</span>
+                <select ?disabled=${this.transcriptBusy} @change=${(e: Event) => this.setSetting("phonemeRecipe", (e.target as HTMLSelectElement).value)}>
+                  ${this.recordingRecipes().map((r) => html`<option value=${r.id} ?selected=${(this.settings.phonemeRecipe || "default") === r.id} title=${r.description || ""}>${r.name || r.id}</option>`)}
+                </select>
+              </label>` : nothing}
+            </div>`
           : nothing}
         <button @click=${() => this.loadCaptions()} ?disabled=${this.transcriptBusy}>Load YouTube captions</button>
         <div class="muted sm">${this.transcriptBusy ? "Working…"
@@ -1757,6 +1773,9 @@ export class App extends LitElement {
       background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:8px; padding:9px 11px; }
     .fs-note-card textarea:focus { outline:none; border-color:var(--accent); }
     .fs-note-foot { display:flex; align-items:center; gap:8px; }
+    .transcribe-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px; }
+    .recipe-pick { display:inline-flex; align-items:center; gap:6px; }
+    .recipe-pick select { padding:6px 8px; border-radius:var(--r-sm); background:var(--bg-elevated); border:1px solid var(--border); color:var(--fg-default); font:inherit; font-size:12.5px; }
     #timeline { position:relative; height:10px; background:var(--bg-elevated); border-radius:99px; cursor:pointer; flex:0 0 auto; margin:2px 0; }
     #progress { position:absolute; inset:0 100% 0 0; background:linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent), white 22%)); border-radius:99px; }
     .marker { position:absolute; top:-3px; width:3px; height:16px; background:var(--accent); border-radius:2px; transform:translateX(-50%); box-shadow:0 0 0 2px var(--bg-deep); }
@@ -1877,7 +1896,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "", syncTags: true };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "", syncTags: true, phonemeRecipe: "" };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }

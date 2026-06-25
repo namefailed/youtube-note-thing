@@ -22,6 +22,7 @@ export interface PhonemeRec { status: string; title: string; summary: string; mo
 export interface TranscriptVersion { idx: number; label: string; model: string; text: string; }
 export interface PhonemeProbe { present: boolean; daemon_ok: boolean; version: string; compatible: boolean; }
 export interface PhonemeTag { id: number; name: string; color: string | null; }
+export interface PhonemeRecipe { id: string; name: string; description: string; builtin: boolean; scope: string; }
 export interface GPlaylist { id: string; title: string; count: number; }
 export interface PlaylistItem { video_id: string; item_id: string; title: string; position: number; in_library: boolean; }
 export interface PlaylistRef { playlist_id: string; playlist_title: string; item_id: string; }
@@ -57,7 +58,8 @@ export const api = {
     invoke<void>("phoneme_apply_tags", { recId, add, remove, colors }),
   phonemeUpdateTag: (id: number, name: string, color: string | null) =>
     invoke<void>("phoneme_update_tag", { id, name, color }),
-  phonemeImport: (url: string) => invoke<string>("phoneme_import", { url }),
+  phonemeImport: (url: string, recipe?: string) => invoke<string>("phoneme_import", { url, recipe: recipe ?? null }),
+  phonemeRecipes: () => invoke<PhonemeRecipe[]>("phoneme_recipes"),
   phonemeSegments: (id: string) => invoke<Segment[]>("phoneme_segments", { id }),
   phonemeChapters: (id: string) => invoke<Chapter[]>("phoneme_chapters", { id }),
   phonemeSearch: (query: string) => invoke<PhonemeHit[]>("phoneme_search", { query }),

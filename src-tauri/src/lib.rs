@@ -333,15 +333,48 @@ fn phoneme_probe() -> PhonemeProbe {
 /// Blocks until the download finishes, so it runs off the async pool. Returns the
 /// new recording id.
 #[tauri::command]
-async fn phoneme_import(url: String) -> Result<String, String> {
-    let out = tauri::async_runtime::spawn_blocking(move || run_phoneme(&["import", &url]))
-        .await
-        .map_err(|e| e.to_string())??;
+async fn phoneme_import(url: String, recipe: Option<String>) -> Result<String, String> {
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        let recipe = recipe.unwrap_or_default();
+        let recipe = recipe.trim();
+        let mut args: Vec<&str> = vec!["import", &url];
+        // Empty / "default" ⇒ no override (Phoneme runs the default pipeline).
+        if !recipe.is_empty() && recipe != "default" {
+            args.push("--recipe");
+            args.push(recipe);
+        }
+        run_phoneme(&args)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let id = out.split_whitespace().last().unwrap_or("").to_string();
     if id.is_empty() {
         return Err("Phoneme returned no recording id".into());
     }
     Ok(id)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PhonemeRecipe {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    builtin: bool,
+    #[serde(default)]
+    scope: String,
+}
+
+/// The Playbook recipes the user has configured in Phoneme, so ytnt can offer a
+/// transcription-pipeline picker. Empty when the daemon/CLI isn't reachable.
+#[tauri::command]
+fn phoneme_recipes() -> Vec<PhonemeRecipe> {
+    let Ok(out) = run_phoneme(&["--json", "recipes"]) else {
+        return vec![];
+    };
+    serde_json::from_str(&out).unwrap_or_default()
 }
 
 /// Parse JSON-lines output, logging (not silently dropping) any unparseable
@@ -1333,6 +1366,7 @@ pub fn run() {
             phoneme_update_tag,
             set_phoneme_bin,
             phoneme_import,
+            phoneme_recipes,
             phoneme_segments,
             phoneme_chapters,
             phoneme_search,
