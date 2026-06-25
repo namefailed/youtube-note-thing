@@ -13,6 +13,7 @@ A few rules govern when a key does something:
 - **Modals capture the keyboard.** When the search, settings, find & replace, tag manager, or cheat-sheet overlay is open, playback and note-list shortcuts are disabled. `Esc` closes the open overlay; `Tab` cycles focus within it.
 - **Transport keys need a loaded video.** Play/pause, seek, speed, mute, fullscreen, and the `0`–`9` seek keys only fire when a video is open in the detail pane.
 - **Note-list keys need notes.** `↑`/`↓`/`Enter`/`Delete` act on the current video's note list and are ignored while you're editing a note.
+- **List-cursor keys need list focus.** When the video list pane is focused (press `G` then `V`, or click it), `↑`/`↓`/`Home`/`End`/`Enter`/`Space` drive the video-list cursor instead — so they never collide with the player or the note list.
 - **The player keeps listening even when the video has focus.** Clicking the YouTube frame normally hands keyboard focus to the embed; ytnt quietly returns focus to the app and drives playback through the player's own API, so your shortcuts keep working either way.
 
 > [!NOTE]
@@ -93,8 +94,16 @@ When you capture a note while the video is fullscreen, a single-line overlay inp
 
 ## Library and selection
 
+The video list has a keyboard cursor. Focus the list first — press `G` then `V`, or click anywhere in it — and a highlighted cursor appears (its own color, distinct from the open video's accent ring). These keys act only while the list is focused, so they never interfere with the player's `J`/`K`/`Space`.
+
 | Keys | Action |
 | --- | --- |
+| `G` then `V` | Focus the video list (turns on the cursor) |
+| `↑` / `↓`  (or `J` / `K`) | Move the cursor to the previous / next video |
+| `Home` / `End` | Jump to the first / last video |
+| `Enter` | Open (or close) the cursored video |
+| `Space` | Toggle the cursored video in the bulk selection |
+| `Esc` | Clear the bulk selection |
 | `Shift + click` a library card | Toggle that video in the bulk selection |
 
 Once one or more videos are selected, a floating bulk-actions bar appears for tagging or deleting them in one go. See [Library and filters](library_and_filters.md) for the full bulk workflow.
