@@ -160,15 +160,27 @@ export class App extends LitElement {
   private lastSaved = 0;
   private lastFocus: HTMLElement | null = null;
   private settings: Settings = loadSettings();
+  @state() private kbdIndex = -1;            // video-list keyboard cursor (-1 = none)
+  private navVids: VideoWithCount[] = [];    // displayed video list, in DOM order (cursor indexes this)
+  private seenVidIds = new Set<string>();    // one-shot row-enter animation bookkeeping
+  private freshVidIds = new Set<string>();
+  private pendingG = 0;                       // `g` chord arm timestamp
 
   private onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
+    // While the video list holds focus, its own keydown owns the navigation keys —
+    // the player must not also act on j/k/Space/arrows then.
+    if (/^(ArrowUp|ArrowDown|Home|End|Enter| |j|k)$/.test(e.key) && (e.composedPath()[0] as HTMLElement)?.closest?.(".lib")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
     if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox) return;
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
     if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
+    // `g v` focuses the video list (opts into list keyboard-nav, Phoneme-style).
+    if (e.key === "g") { e.preventDefault(); this.pendingG = Date.now(); return; }
+    if (this.pendingG && e.key === "v" && Date.now() - this.pendingG < 1000) { this.pendingG = 0; e.preventDefault(); (this.renderRoot.querySelector(".lib") as HTMLElement)?.focus(); return; }
+    this.pendingG = 0;
     if (!this.currentId) return;
     // Transport — drives the player via its JS API, so it works regardless of
     // whether the iframe or the app has focus (see onFocusIn).
@@ -773,6 +785,29 @@ export class App extends LitElement {
     if (s.has(id)) s.delete(id); else s.add(id);
     this.selected = s;
   }
+  /** Video-list keyboard cursor — runs only while `.lib` is focused, so it never
+   *  competes with the player's global j/k/space. Arrows (+ j/k aliases), Home/End
+   *  move; Enter opens; Space toggles bulk-select; Esc clears the selection. */
+  private onListKey(e: KeyboardEvent) {
+    const key = e.key === "j" ? "ArrowDown" : e.key === "k" ? "ArrowUp" : e.key;
+    const n = this.navVids.length;
+    if (!n) return;
+    let i = this.kbdIndex < 0 ? 0 : this.kbdIndex;
+    if (key === "ArrowDown") i = Math.min(i + 1, n - 1);
+    else if (key === "ArrowUp") i = Math.max(i - 1, 0);
+    else if (key === "Home") i = 0;
+    else if (key === "End") i = n - 1;
+    else if (key === "Enter") { e.preventDefault(); const v = this.navVids[i]; if (v) this.toggleVideo(v.id, v.url); return; }
+    else if (key === " ") { e.preventDefault(); const v = this.navVids[i]; if (v) this.toggleSelect(v.id); return; }
+    else if (key === "Escape" && this.selected.size) { e.preventDefault(); this.selected = new Set(); return; }
+    else return;
+    e.preventDefault();
+    this.kbdIndex = i;
+    this.updateComplete.then(() => {
+      const rows = this.renderRoot.querySelectorAll(".lib .libcard");
+      (rows[i] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
+    });
+  }
   private async bulkDelete() {
     const ids = [...this.selected];
     for (const id of ids) { if (id === this.currentId) this.deselect(); await api.deleteVideo(id); }
@@ -1008,6 +1043,9 @@ export class App extends LitElement {
     vids = [...vids];
     if (!this.sortDesc) vids.reverse();          // list arrives newest-first; reverse → oldest-first
     vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
+    this.navVids = vids;                                         // the list cursor + Enter index this
+    this.freshVidIds = new Set(vids.filter((v) => !this.seenVidIds.has(v.id)).map((v) => v.id));
+    for (const v of vids) this.seenVidIds.add(v.id);             // one-shot: only genuinely-new rows animate in
     const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen;
     return html`
       <header class="appbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
@@ -1095,11 +1133,13 @@ export class App extends LitElement {
       </aside>
 
       <section class="list" ?inert=${trapped}>
-        <div class="lib">
-          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v) => {
+        <div class="lib" tabindex="0"
+          @focusin=${() => { if (this.kbdIndex < 0 && this.navVids.length) this.kbdIndex = Math.max(0, this.navVids.findIndex((v) => v.id === this.currentId)); }}
+          @keydown=${(e: KeyboardEvent) => this.onListKey(e)}>
+          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v, i) => {
             const sub = [v.channel, v.view_count != null ? formatViews(v.view_count) : "", v.published_at ? relativeDate(v.published_at) : ""].filter(Boolean);
             return html`
-            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
+            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""} ${i === this.kbdIndex ? "kbd" : ""} ${this.freshVidIds.has(v.id) ? "fresh" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
               <div class="thumbwrap">
                 <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                   @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
@@ -1662,6 +1702,11 @@ export class App extends LitElement {
       ["M / F", "Mute / fullscreen"],
       ["Ctrl+B", "Toggle sidebar"],
       ["Shift+click", "Select videos (bulk)"],
+      ["G then V", "Focus the video list"],
+      ["↑ / ↓  (J / K)", "Move list cursor — when the list is focused"],
+      ["Home / End", "First / last video"],
+      ["Enter", "Open / close the cursored video"],
+      ["Space", "Select / deselect video (bulk)"],
       ["0–9", "Seek to 0–90%"],
       ["↑ / ↓", "Select previous / next note"],
       ["Enter / Delete", "Edit / delete selected note"],
@@ -1734,9 +1779,10 @@ export class App extends LitElement {
     .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); padding:14px 16px 6px; }
     .lib { flex:1; min-height:0; overflow:auto; padding:6px 8px 8px; display:flex; flex-direction:column; gap:2px; }
     .detail-empty { color:var(--fg-muted); }
-    .libcard { display:flex; gap:9px; align-items:flex-start; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; transition:background .12s; }
-    .libcard:hover { background:var(--hover); }
-    .libcard.active { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
+    .libcard { display:flex; gap:9px; align-items:flex-start; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; transition:background var(--ui-motion-fast), transform var(--ui-motion-fast); }
+    .libcard:hover { background:var(--hover); transform:translateX(2px); }
+    .libcard.active, .libcard.active:hover { transform:none; background:color-mix(in srgb, var(--accent) 22%, transparent);
+      box-shadow:inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 80%, white), 0 2px 16px color-mix(in srgb, var(--accent) 22%, transparent); }
     .libcard .thumbwrap { position:relative; flex:0 0 auto; }
     .libcard .thumb { width:88px; height:50px; border-radius:5px; object-fit:cover; background:#000; display:block; }
     .libcard .durbadge { position:absolute; bottom:3px; right:3px; background:rgba(0,0,0,.82); color:#fff; font-size:9.5px; line-height:14px; padding:0 4px; border-radius:3px; font-variant-numeric:tabular-nums; pointer-events:none; }
@@ -1753,7 +1799,19 @@ export class App extends LitElement {
     .libcard .lc-actions .ghost:hover { background:var(--hover); }
     .libcard .rm:hover { color:var(--err); background:color-mix(in srgb, var(--err) 14%, transparent); }
     .libcard .pin.on { opacity:1; color:var(--accent); }
-    .libcard.sel { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
+    .libcard.sel { background:color-mix(in srgb, var(--accent) 13%, transparent); box-shadow:none; }
+    .libcard.sel:hover { background:color-mix(in srgb, var(--accent) 17%, transparent); }
+    .libcard.sel.active, .libcard.sel.active:hover { transform:none; background:color-mix(in srgb, var(--accent) 22%, transparent);
+      box-shadow:inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 80%, white), 0 2px 16px color-mix(in srgb, var(--accent) 22%, transparent); }
+    /* Keyboard cursor (--kbd-cursor): left rail + ring. Dimmed when the list isn't
+       focused, full when it is; active always beats it via :not(.active). */
+    .lib .libcard.kbd:not(.active) { box-shadow:inset 3px 0 0 color-mix(in srgb, var(--kbd-cursor) 45%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--kbd-cursor) 24%, transparent); background:color-mix(in srgb, var(--kbd-cursor) 6%, transparent); }
+    .lib:focus-within .libcard.kbd:not(.active) { box-shadow:inset 3px 0 0 var(--kbd-cursor), inset 0 0 0 1px color-mix(in srgb, var(--kbd-cursor) 55%, transparent); background:color-mix(in srgb, var(--kbd-cursor) 12%, transparent); }
+    .lib:focus-within .libcard { transition:none; transform:none; }
+    .lib:focus { outline:none; }
+    /* New imports fade in once (reduced-motion zeros --ui-motion → instant). */
+    .libcard.fresh { animation:recRowIn var(--ui-motion) cubic-bezier(.22,.61,.36,1); }
+    @keyframes recRowIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
     .bulkbar { position:fixed; z-index:60; display:flex; align-items:center; gap:8px; padding:8px 10px 8px 6px; max-width:calc(100vw - 32px); flex-wrap:wrap;
       background:color-mix(in srgb, var(--bg-elevated) 96%, transparent); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
       border:var(--popup-border, 1px solid var(--border)); border-radius:12px; box-shadow:0 16px 44px rgba(0,0,0,.5); animation:bulk-in var(--ui-motion) ease-out; }
@@ -1779,7 +1837,8 @@ export class App extends LitElement {
     .pl-head .si-label { font-size:12px; color:var(--fg-muted); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .plcard { display:flex; gap:9px; align-items:center; padding:6px; border-radius:var(--r-sm); cursor:pointer; transition:background .12s; }
     .plcard:hover { background:var(--hover); }
-    .plcard.active { background:var(--tint); box-shadow:inset 3px 0 0 var(--accent); }
+    .plcard.active { background:color-mix(in srgb, var(--accent) 22%, transparent);
+      box-shadow:inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 80%, white), 0 2px 16px color-mix(in srgb, var(--accent) 22%, transparent); }
     .plcard .thumb { width:58px; height:33px; border-radius:5px; object-fit:cover; background:#000; flex:0 0 auto; }
     .plcard .meta { min-width:0; flex:1; }
     .plcard .t { font-size:12.5px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
@@ -2011,9 +2070,11 @@ export class App extends LitElement {
     .kbd2 { background:var(--bg-elevated); border:1px solid var(--border); border-radius:5px; padding:1px 6px; color:var(--fg-default); font-size:12px; }
 
     .overlay { position:fixed; inset:0; background:color-mix(in srgb, var(--bg-deep) 68%, transparent); backdrop-filter:blur(4px);
-      display:flex; justify-content:center; padding-top:11vh; z-index:10; }
+      display:flex; justify-content:center; padding-top:11vh; z-index:10; animation:ov-fade-in var(--ui-motion) ease-out; }
     .panel { background:var(--bg-surface); border:var(--popup-border, 1px solid var(--border)); border-radius:14px; box-shadow:0 24px 70px rgba(0,0,0,.6);
-      padding:16px; width:min(640px,92vw); max-height:74vh; overflow:auto; display:flex; flex-direction:column; gap:12px; }
+      padding:16px; width:min(640px,92vw); max-height:74vh; overflow:auto; display:flex; flex-direction:column; gap:12px; animation:panel-in var(--ui-motion) cubic-bezier(.34,1.56,.64,1); }
+    @keyframes ov-fade-in { from { opacity:0; } to { opacity:1; } }
+    @keyframes panel-in { from { transform:translateY(-8px) scale(.97); opacity:0; } to { transform:none; opacity:1; } }
     /* Inset the panel's scrollbar so it clears the 14px rounded corners. */
     .panel::-webkit-scrollbar-track { margin:14px 0; }
     /* Themed confirm dialog (replaces the native OS dialog) */
