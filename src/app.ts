@@ -80,7 +80,9 @@ export class App extends LitElement {
   @state() private searchResults: SearchHit[] = [];
   @state() private phonemeHits: PhonemeHit[] = [];
   @state() private settingsOpen = false;
-  @state() private toasts: { id: number; msg: string; kind: "info" | "ok" | "err" }[] = [];
+  @state() private toasts: { id: number; msg: string; kind: "info" | "ok" | "err"; out?: boolean }[] = [];
+  @state() private modalClosing = false;
+  private closeTimer: ReturnType<typeof setTimeout> | 0 = 0;
   private toastN = 0;
   @state() private selectedId: string | null = null;
   @state() private tagFilter: string | null = null;
@@ -146,7 +148,7 @@ export class App extends LitElement {
   @state() private cmpLeft = 0;
   @state() private cmpRight = 0;
   private pollTimer = 0;
-  private liveOn = false;
+  @state() private liveOn = false;
   private unlistenPhoneme: (() => void) | null = null;
   @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
   @state() private listOpen = localStorage.getItem("ytnt.list") !== "0";
@@ -174,7 +176,7 @@ export class App extends LitElement {
   @state() private navHud: { side: number; label: string } | null = null;
 
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
+    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.closeModal(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
     // While the video list holds focus, its own keydown owns the navigation keys —
     // the player must not also act on j/k/Space/arrows then.
@@ -589,6 +591,9 @@ export class App extends LitElement {
     return [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(isVisible);
   }
   private openModal(which: "search" | "settings" | "tagmgr" | "doctor") {
+    if (this.closeTimer) { clearTimeout(this.closeTimer); this.closeTimer = 0; }
+    this.modalClosing = false;
+    this.searchOpen = this.settingsOpen = this.tagMgrOpen = this.doctorOpen = this.cheatOpen = this.findReplaceOpen = false;
     this.lastFocus = ((this.renderRoot as ShadowRoot).activeElement as HTMLElement) ?? null;
     if (which === "search") { this.searchResults = []; this.phonemeHits = []; this.searchOpen = true; }
     else if (which === "tagmgr") this.tagMgrOpen = true;
@@ -596,10 +601,20 @@ export class App extends LitElement {
     else this.settingsOpen = true;
     this.updateComplete.then(() => this.focusables()[0]?.focus());
   }
+  /** Animated modal close: fade/slide the overlay out, then unmount after the motion. */
   private closeModal() {
-    this.searchOpen = false; this.settingsOpen = false; this.tagMgrOpen = false; this.doctorOpen = false;
-    const target = this.lastFocus; this.lastFocus = null;
-    this.updateComplete.then(() => { try { target?.focus(); } catch { /* trigger gone */ } });
+    if (this.modalClosing) return;
+    const finish = () => {
+      this.closeTimer = 0; this.modalClosing = false;
+      this.searchOpen = false; this.settingsOpen = false; this.tagMgrOpen = false; this.doctorOpen = false;
+      this.cheatOpen = false; this.findReplaceOpen = false;
+      const target = this.lastFocus; this.lastFocus = null;
+      this.updateComplete.then(() => { try { target?.focus(); } catch { /* trigger gone */ } });
+    };
+    const motion = getComputedStyle(this).getPropertyValue("--ui-motion").trim();
+    if (!motion || motion === "0ms" || motion === "0s") { finish(); return; }
+    this.modalClosing = true;
+    this.closeTimer = setTimeout(finish, 200);
   }
   /** Themed in-app confirm. Resolves true on confirm, false on cancel/Esc. */
   private confirm(message: string, opts: { title?: string; confirmLabel?: string; kind?: "warning" | "danger" } = {}): Promise<boolean> {
@@ -777,6 +792,7 @@ export class App extends LitElement {
   private flash(msg: string, kind: "info" | "ok" | "err" = "info") {
     const id = ++this.toastN;
     this.toasts = [...this.toasts, { id, msg, kind }];
+    setTimeout(() => (this.toasts = this.toasts.map((t) => (t.id === id ? { ...t, out: true } : t))), 2600);
     setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), 2800);
   }
   private async checkUpdates() {
@@ -1199,7 +1215,7 @@ export class App extends LitElement {
         <button class="primary" @click=${() => this.addFromInput()}>Load</button>
         <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
         <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
-        <button class="hdot ${this.phonemeOk ? "ok" : this.phonemePresent ? "warn" : ""}" aria-label="Open diagnostics" @click=${() => this.openModal("doctor")}
+        <button class="hdot ${this.phonemeOk ? "ok" : this.phonemePresent ? "warn" : ""} ${this.liveOn ? "busy" : ""}" aria-label="Open diagnostics" @click=${() => this.openModal("doctor")}
           title=${`${this.phonemeOk ? `Phoneme connected${this.phonemeVersion ? ` (${this.phonemeVersion})` : ""}` : this.phonemePresent ? "Phoneme installed — daemon not responding" : "Phoneme not detected"} — click for diagnostics`}></button>
       </header>
 
@@ -1446,7 +1462,7 @@ export class App extends LitElement {
         </div>
       </div>` : nothing}
       ${this.toasts.length ? html`<div class="toasts" role="status" aria-live="polite">
-        ${this.toasts.map((t) => html`<div class="toast ${t.kind}"><span class="ti">${t.kind === "ok" ? "✓" : t.kind === "err" ? "✕" : "i"}</span><span>${t.msg}</span></div>`)}
+        ${this.toasts.map((t) => html`<div class="toast ${t.kind} ${t.out ? "out" : ""}"><span class="ti">${t.kind === "ok" ? "✓" : t.kind === "err" ? "✕" : "i"}</span><span>${t.msg}</span></div>`)}
       </div>` : nothing}
       ${this.navActive && this.focusedPane && this.focusedPane !== "list" && this.navHud ? html`
         <div class="navhud" style="right:${this.navHud.side}px">
@@ -1488,7 +1504,7 @@ export class App extends LitElement {
   }
 
   private renderSearch() {
-    return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Search notes" @click=${(e: Event) => e.stopPropagation()}>
         <div class="sbar">${I.search}<input type="text" placeholder="Search all notes…"
           @input=${(e: Event) => this.runSearch((e.target as HTMLInputElement).value)} /></div>
@@ -1538,7 +1554,7 @@ export class App extends LitElement {
     const checks = this.doctorChecks();
     const issues = checks.filter((c) => !c.ok).length;
     const catLabel = (c: "critical" | "warning" | "info") => (c === "critical" ? "Critical" : c === "warning" ? "Warning" : "Info");
-    return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Diagnostics" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Diagnostics</span>
           <span style="display:inline-flex;gap:2px">
@@ -1577,7 +1593,7 @@ export class App extends LitElement {
   }
   private renderTagManager() {
     const tags = this.allTags();
-    return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Tag manager" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Tag manager</span>
           <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
@@ -1607,7 +1623,7 @@ export class App extends LitElement {
     </div>`;
   }
   private renderSettings() {
-    return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Settings" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Settings</span>
           <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
@@ -1835,10 +1851,10 @@ export class App extends LitElement {
   }
 
   private renderFindReplace() {
-    return html`<div class="overlay" @click=${() => (this.findReplaceOpen = false)} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Find and replace" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Find &amp; replace in notes</span>
-          <button class="ghost" title="Close" @click=${() => (this.findReplaceOpen = false)}>${I.close}</button></div>
+          <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
         <label class="field col"><span>Find</span><input id="fr-find" type="text" placeholder="text to find" /></label>
         <label class="field col"><span>Replace with</span><input id="fr-repl" type="text" placeholder="replacement (blank to delete)" /></label>
         <div class="row2"><span class="grow"></span>
@@ -1877,10 +1893,10 @@ export class App extends LitElement {
       ["?", "Keyboard shortcuts (this)"],
       ["Esc", "Close dialog / cancel"],
     ];
-    return html`<div class="overlay" @click=${() => (this.cheatOpen = false)} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" @click=${(e: Event) => e.stopPropagation()}>
         <div class="panel-head"><span>Keyboard shortcuts</span>
-          <button class="ghost" title="Close" @click=${() => (this.cheatOpen = false)}>${I.close}</button></div>
+          <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
         <div class="cheat">
           ${rows.map(([k, d]) => html`<div class="cheat-row"><kbd>${k}</kbd><span>${d}</span></div>`)}
         </div>
@@ -2182,6 +2198,22 @@ export class App extends LitElement {
     .toast.ok { border-left-color:var(--ok); }
     .toast.err { border-left-color:var(--err); }
     @keyframes toast-in { from { opacity:0; transform:translateX(calc(100% + 24px)); } to { opacity:1; transform:none; } }
+    /* ── Animation sweep (Phoneme parity) ── */
+    .toast.out { animation:toast-out var(--ui-motion) ease-in both; }
+    @keyframes toast-out { 0% { opacity:1; transform:none; max-height:80px; } 55% { opacity:0; transform:translateX(calc(100% + 24px)); max-height:80px; } 100% { opacity:0; transform:translateX(calc(100% + 24px)); max-height:0; margin-top:-8px; } }
+    .menu[open] > .menu-pop { animation:menu-in var(--ui-motion-fast) ease-out; }
+    @keyframes menu-in { from { opacity:0; transform:translateY(-5px); } to { opacity:1; transform:none; } }
+    .tag-chip-wrap { animation:tagChipIn var(--ui-motion) cubic-bezier(.22,.61,.36,1); transform-origin:left center; }
+    @keyframes tagChipIn { from { opacity:0; transform:scale(.82); } to { opacity:1; transform:scale(1); } }
+    .notes, .transcript { animation:view-enter var(--ui-motion) ease-out; }
+    @keyframes view-enter { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
+    .overlay.closing { animation:ov-fade-out var(--ui-motion) ease-in forwards; }
+    .overlay.closing .panel { animation:panel-out var(--ui-motion) cubic-bezier(.4,0,1,1) forwards; }
+    @keyframes ov-fade-out { from { opacity:1; } to { opacity:0; } }
+    @keyframes panel-out { from { transform:none; opacity:1; } to { transform:translateY(-6px) scale(.97); opacity:0; } }
+    .hdot.busy { animation:dot-pulse 1.4s ease-in-out infinite; }
+    @keyframes dot-pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
+    @media (prefers-reduced-motion: reduce) { .spin, .hdot.busy { animation:none; } .tag-chip-wrap, .notes, .transcript, .menu[open] > .menu-pop { animation:none; } }
     details.menu { position:relative; flex:0 0 auto; }
     details.menu > summary { list-style:none; cursor:pointer; display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
     details.menu > summary::-webkit-details-marker { display:none; }
