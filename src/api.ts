@@ -20,7 +20,7 @@ export interface Chapter { start_ms: number; end_ms: number; title: string; summ
 export interface PhonemeHit { id: string; title: string; snippet: string; }
 export interface PhonemeRec { status: string; title: string; summary: string; model: string; language: string; duration_ms: number; confidence: number | null; entities: { kind: string; value: string }[]; tasks: { text: string; done: boolean }[]; }
 export interface TranscriptVersion { idx: number; label: string; model: string; text: string; }
-export interface PhonemeProbe { present: boolean; daemon_ok: boolean; version: string; compatible: boolean; }
+export interface PhonemeProbe { present: boolean; daemon_ok: boolean; version: string; compatible: boolean; path: string; }
 export interface PhonemeTag { id: number; name: string; color: string | null; }
 export interface PhonemeRecipe { id: string; name: string; description: string; builtin: boolean; scope: string; }
 export interface GPlaylist { id: string; title: string; count: number; }

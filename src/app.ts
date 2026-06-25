@@ -64,6 +64,8 @@ function themeLabel(slug: string): string {
 }
 
 interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; phonemeRecipe: string; }
+/** One Diagnostics ("ytnt doctor") check, mirroring Phoneme's CheckResult shape. */
+type DoctorCheck = { name: string; ok: boolean; cat: "critical" | "warning" | "info"; detail: string; fix?: { label: string; run: () => void } };
 type Editing = { id?: string; t: number; draft: string } | null;
 
 @customElement("ytnt-app")
@@ -126,6 +128,8 @@ export class App extends LitElement {
   @state() private phonemePresent = false;
   @state() private phonemeCompatible = true;
   @state() private phonemeVersion = "";
+  @state() private phonemePath = "";
+  @state() private doctorOpen = false;
   private probeTimer = 0;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private rate = 1;
@@ -155,10 +159,10 @@ export class App extends LitElement {
   private settings: Settings = loadSettings();
 
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
+    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
-    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen) return;
+    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen) return;
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
     if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
@@ -218,6 +222,7 @@ export class App extends LitElement {
       this.phonemePresent = p.present;
       this.phonemeCompatible = p.compatible;
       this.phonemeVersion = p.version;
+      this.phonemePath = p.path;
       // Pull Phoneme's tag colors when the daemon (re)appears.
       if (p.daemon_ok && !this.prevDaemonOk) { this.refreshTagColors(); this.flushPendingTags(); this.refreshRecipes(); }
       this.prevDaemonOk = p.daemon_ok;
@@ -533,15 +538,16 @@ export class App extends LitElement {
     if (!panel) return [];
     return [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(isVisible);
   }
-  private openModal(which: "search" | "settings" | "tagmgr") {
+  private openModal(which: "search" | "settings" | "tagmgr" | "doctor") {
     this.lastFocus = ((this.renderRoot as ShadowRoot).activeElement as HTMLElement) ?? null;
     if (which === "search") { this.searchResults = []; this.phonemeHits = []; this.searchOpen = true; }
     else if (which === "tagmgr") this.tagMgrOpen = true;
+    else if (which === "doctor") this.doctorOpen = true;
     else this.settingsOpen = true;
     this.updateComplete.then(() => this.focusables()[0]?.focus());
   }
   private closeModal() {
-    this.searchOpen = false; this.settingsOpen = false; this.tagMgrOpen = false;
+    this.searchOpen = false; this.settingsOpen = false; this.tagMgrOpen = false; this.doctorOpen = false;
     const target = this.lastFocus; this.lastFocus = null;
     this.updateComplete.then(() => { try { target?.focus(); } catch { /* trigger gone */ } });
   }
@@ -999,7 +1005,7 @@ export class App extends LitElement {
     vids = [...vids];
     if (!this.sortDesc) vids.reverse();          // list arrives newest-first; reverse → oldest-first
     vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
-    const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen;
+    const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen;
     return html`
       <header class="appbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
         <button class="ham" title="Toggle filters" aria-label="Toggle filters" @click=${() => this.toggleSidebar()}>${I.menu}</button>
@@ -1009,7 +1015,8 @@ export class App extends LitElement {
         <button class="primary" @click=${() => this.addFromInput()}>Load</button>
         <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
         <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
-        <span class="hdot ${this.phonemeOk ? "ok" : this.phonemePresent ? "warn" : ""}" title=${this.phonemeOk ? `Phoneme connected${this.phonemeVersion ? ` (${this.phonemeVersion})` : ""}` : this.phonemePresent ? "Phoneme installed — daemon not responding" : "Phoneme not detected"}></span>
+        <button class="hdot ${this.phonemeOk ? "ok" : this.phonemePresent ? "warn" : ""}" aria-label="Open diagnostics" @click=${() => this.openModal("doctor")}
+          title=${`${this.phonemeOk ? `Phoneme connected${this.phonemeVersion ? ` (${this.phonemeVersion})` : ""}` : this.phonemePresent ? "Phoneme installed — daemon not responding" : "Phoneme not detected"} — click for diagnostics`}></button>
       </header>
 
       <div class="resizer rz-sidebar" title="Drag to resize" @pointerdown=${(e: PointerEvent) => this.startResize("sidebar", e)}></div>
@@ -1232,6 +1239,7 @@ export class App extends LitElement {
       ${this.cheatOpen ? this.renderCheat() : nothing}
       ${this.findReplaceOpen ? this.renderFindReplace() : nothing}
       ${this.tagMgrOpen ? this.renderTagManager() : nothing}
+      ${this.doctorOpen ? this.renderDoctor() : nothing}
       ${this.selected.size ? html`<div class="bulkbar" style=${this.bulkPos
           ? `left:${this.bulkPos.x}px; top:${this.bulkPos.y}px;`
           : `left:50%; bottom:24px; transform:translateX(-50%);`}>
@@ -1307,6 +1315,60 @@ export class App extends LitElement {
     </div>`;
   }
 
+  /** Diagnostics checks ("ytnt doctor"), computed from the live probe + account
+   *  state. Phoneme and YouTube are optional, so a missing one is Info, not a
+   *  failure; a present-but-broken Phoneme daemon is a Warning with a one-click fix. */
+  private doctorChecks(): DoctorCheck[] {
+    const checks: DoctorCheck[] = [];
+    if (this.phonemePresent) {
+      checks.push({ name: "Phoneme CLI", ok: true, cat: "info",
+        detail: `Found${this.phonemeVersion ? ` — v${this.phonemeVersion}` : ""}${this.phonemePath ? ` · ${this.phonemePath}` : ""}` });
+      checks.push(this.phonemeOk
+        ? { name: "Phoneme daemon", ok: true, cat: "info", detail: "Running and responding." }
+        : { name: "Phoneme daemon", ok: false, cat: "warning", detail: "Installed, but the daemon isn't responding — start it to transcribe.", fix: { label: "Start Phoneme", run: () => this.startDaemon() } });
+      if (!this.phonemeCompatible) {
+        checks.push({ name: "Phoneme version", ok: false, cat: "warning",
+          detail: `${this.phonemeVersion || "unknown"} looks older than ytnt expects — transcript panels may be blank. Update Phoneme.` });
+      }
+    } else {
+      checks.push({ name: "Phoneme CLI", ok: false, cat: "info",
+        detail: "Not detected. Phoneme is optional — install it for transcripts, summaries, chapters and tag sync.",
+        fix: { label: "Set CLI path…", run: () => { this.closeModal(); this.openModal("settings"); } } });
+    }
+    checks.push(this.googleConnected
+      ? { name: "YouTube account", ok: true, cat: "info", detail: "Connected. If a playlist edit ever fails, reconnect to refresh write access." }
+      : { name: "YouTube account", ok: false, cat: "info",
+          detail: this.googleHasDefault ? "Not connected — optional, for playlists and richer card metadata." : "Not connected, and no built-in client — add your own client under Settings.",
+          fix: { label: "Connect…", run: () => { this.closeModal(); this.openModal("settings"); } } });
+    return checks;
+  }
+  private renderDoctor() {
+    const checks = this.doctorChecks();
+    const issues = checks.filter((c) => !c.ok).length;
+    const catLabel = (c: "critical" | "warning" | "info") => (c === "critical" ? "Critical" : c === "warning" ? "Warning" : "Info");
+    return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+      <div class="panel" role="dialog" aria-modal="true" aria-label="Diagnostics" @click=${(e: Event) => e.stopPropagation()}>
+        <div class="panel-head"><span>Diagnostics</span>
+          <span style="display:inline-flex;gap:2px">
+            <button class="ghost" title="Re-check" aria-label="Re-check" @click=${() => this.probePhoneme()}>${I.replace}</button>
+            <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button>
+          </span></div>
+        <div class="help muted sm">${issues
+          ? `${issues} item${issues === 1 ? "" : "s"} to look at — all optional; ytnt works fully on its own.`
+          : "All good — Phoneme and your YouTube account are connected (both optional)."}</div>
+        <div class="doctor-list">
+          ${checks.map((c) => html`<div class="doctor-row ${c.ok ? "ok" : c.cat}">
+            <span class="doctor-icon">${c.ok ? "✓" : c.cat === "critical" ? "✕" : "!"}</span>
+            <div class="doctor-main">
+              <div class="doctor-name">${c.name}${c.ok ? nothing : html`<span class="doctor-cat ${c.cat}">${catLabel(c.cat)}</span>`}</div>
+              <div class="doctor-detail muted sm">${c.detail}</div>
+            </div>
+            ${c.fix ? html`<button class="btn doctor-fix" @click=${() => c.fix!.run()}>${c.fix.label}</button>` : nothing}
+          </div>`)}
+        </div>
+      </div>
+    </div>`;
+  }
   private renderTagManager() {
     const tags = this.allTags();
     return html`<div class="overlay" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
@@ -1807,7 +1869,8 @@ export class App extends LitElement {
     .appbar input { flex:1; }
     .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; }
     .ham:hover { background:var(--hover); color:var(--fg-default); }
-    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:4px; transition:background var(--ui-motion-fast); }
+    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:4px; padding:0; border:none; cursor:pointer; transition:background var(--ui-motion-fast), box-shadow var(--ui-motion-fast); }
+    .hdot:hover { box-shadow:0 0 0 3px color-mix(in srgb, var(--fg-default) 16%, transparent); }
     .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
     .hdot.warn { background:var(--warn); box-shadow:0 0 8px color-mix(in srgb, var(--warn) 70%, transparent); }
     .compat-warn { background:color-mix(in srgb, var(--warn) 18%, transparent); border:1px solid var(--warn); color:var(--fg-default); border-radius:var(--r-sm); padding:8px 11px; font-size:12.5px; line-height:1.45; }
@@ -1935,6 +1998,24 @@ export class App extends LitElement {
       padding:16px; width:min(640px,92vw); max-height:74vh; overflow:auto; display:flex; flex-direction:column; gap:12px; }
     /* Inset the panel's scrollbar so it clears the 14px rounded corners. */
     .panel::-webkit-scrollbar-track { margin:14px 0; }
+    /* Diagnostics ("ytnt doctor") */
+    .doctor-list { display:flex; flex-direction:column; gap:7px; }
+    .doctor-row { display:flex; align-items:flex-start; gap:10px; padding:9px 11px; border-radius:var(--r-sm); background:var(--bg-deep); border:1px solid var(--border-subtle); }
+    .doctor-row.ok { opacity:.8; }
+    .doctor-row.warning { border-color:color-mix(in srgb, var(--warn) 45%, var(--border-subtle)); }
+    .doctor-row.critical { border-color:color-mix(in srgb, var(--err) 50%, var(--border-subtle)); }
+    .doctor-icon { flex:0 0 auto; width:18px; text-align:center; font-weight:700; line-height:1.5; }
+    .doctor-row.ok .doctor-icon { color:var(--ok); }
+    .doctor-row.warning .doctor-icon { color:var(--warn); }
+    .doctor-row.critical .doctor-icon { color:var(--err); }
+    .doctor-main { flex:1; min-width:0; }
+    .doctor-name { display:flex; align-items:center; gap:8px; font-weight:600; font-size:13px; }
+    .doctor-cat { font-size:9.5px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; padding:1px 6px; border-radius:4px; }
+    .doctor-cat.warning { color:var(--warn); background:color-mix(in srgb, var(--warn) 16%, transparent); }
+    .doctor-cat.critical { color:var(--err); background:color-mix(in srgb, var(--err) 16%, transparent); }
+    .doctor-cat.info { color:var(--fg-faded); background:color-mix(in srgb, var(--fg-faded) 12%, transparent); }
+    .doctor-detail { margin-top:2px; word-break:break-word; }
+    .doctor-fix { flex:0 0 auto; align-self:center; padding:5px 11px; font-size:12px; }
     .panel-head { display:flex; align-items:center; justify-content:space-between; font-weight:650; font-size:15px; }
     .field { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .field>span { color:var(--fg-muted); font-size:13px; }

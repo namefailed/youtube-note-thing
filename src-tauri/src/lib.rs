@@ -310,6 +310,8 @@ struct PhonemeProbe {
     version: String,
     /// `version` is at least [`MIN_PHONEME_VERSION`] (or unknown, treated as ok).
     compatible: bool,
+    /// The resolved CLI path ytnt is invoking (for the Diagnostics panel).
+    path: String,
 }
 
 /// A richer Phoneme probe than [`phoneme_available`]: distinguishes "CLI present"
@@ -339,7 +341,7 @@ fn phoneme_probe() -> PhonemeProbe {
         .map(|v| v >= MIN_PHONEME_VERSION)
         .unwrap_or(true);
     let daemon_ok = present && phoneme_available();
-    PhonemeProbe { present, daemon_ok, version, compatible }
+    PhonemeProbe { present, daemon_ok, version, compatible, path: resolve_phoneme() }
 }
 
 /// Hand a YouTube URL to Phoneme (downloads audio + queues transcription).
