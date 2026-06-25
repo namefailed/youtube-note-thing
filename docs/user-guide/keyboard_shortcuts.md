@@ -39,6 +39,9 @@ See [Taking notes](taking_notes.md) for what capture does (offset and auto-pause
 
 Active when a video is loaded. These talk to the player directly, so they work whether the app or the video frame has focus.
 
+> [!IMPORTANT]
+> If you've turned on [keyboard navigation](#keyboard-navigation), these YouTube-style keys only drive the player when you're **in** the video — fullscreen, or after you focus the player with `G` then `V` (press `Esc` to step back out). Everywhere else the keys move the cursor, so navigation is never hijacked by the player. With keyboard navigation **off**, the playback keys below are always live whenever a video is loaded.
+
 | Keys | Action |
 | --- | --- |
 | `Space` or `K` | Play / pause |
@@ -104,7 +107,8 @@ Press `G`, then a destination:
 | --- | --- |
 | `G` then `L` | Focus the video list |
 | `G` then `B` | Focus the sidebar filters |
-| `G` then `V` / `D` | Focus the video / detail pane |
+| `G` then `V` | Enter the **player** — the YouTube playback keys go live (`Esc` steps out) |
+| `G` then `D` | Focus the detail pane's controls (title, tabs, tags, notes) |
 | `G` then `N` / `T` | Switch the detail pane to Notes / Transcript |
 | `G` then `S` | Open Settings |
 | `G` then `Shift + D` | Open Diagnostics |
@@ -176,7 +180,7 @@ Press `?` to open the built-in cheat sheet. It mirrors this reference for the ev
 | `Ctrl+B` | Toggle sidebar |
 | `Shift+click` | Select videos (bulk) |
 | `G then L / B` | Focus the list / sidebar filters |
-| `G then V / D` | Focus the video / detail pane |
+| `G then V` | Enter the player (playback keys live) |
 | `H J K L` | Move the cursor (a pane focused, nav on) |
 | `0–9` | Seek to 0–90% |
 | `↑ / ↓` | Select previous / next note |
