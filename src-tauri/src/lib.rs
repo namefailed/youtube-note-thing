@@ -1314,8 +1314,15 @@ async fn google_remove_playlist_item(
         .await
         .map_err(err)?;
     if !res.status().is_success() {
+        let code = res.status().as_u16();
         let body = res.text().await.unwrap_or_default();
-        return Err(format!("Couldn't remove from playlist (need write access?): {body}"));
+        // A refresh token keeps only the scopes granted at consent. A login made
+        // under the old read-only scope can read playlists but not modify them —
+        // 401/403 here means "reconnect to grant write access", not a code bug.
+        if code == 401 || code == 403 || body.contains("insufficient") || body.contains("SCOPE") {
+            return Err("Your Google sign-in is read-only. Disconnect and reconnect under Settings → YouTube account, approving \"Manage your YouTube account\", then try again.".into());
+        }
+        return Err(format!("Couldn't remove from playlist: {body}"));
     }
     db.delete_playlist_item(&playlist_id, &video_id).await.map_err(err)
 }
