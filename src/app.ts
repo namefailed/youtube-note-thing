@@ -63,7 +63,7 @@ function themeLabel(slug: string): string {
   return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
-interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; phonemeRecipe: string; }
+interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; phonemeRecipe: string; vimNav: boolean; arrowNav: boolean; }
 /** One Diagnostics ("ytnt doctor") check, mirroring Phoneme's CheckResult shape. */
 type DoctorCheck = { name: string; ok: boolean; cat: "critical" | "warning" | "info"; detail: string; fix?: { label: string; run: () => void } };
 type Editing = { id?: string; t: number; draft: string } | null;
@@ -160,6 +160,10 @@ export class App extends LitElement {
   private lastSaved = 0;
   private lastFocus: HTMLElement | null = null;
   private settings: Settings = loadSettings();
+  // Keyboard-nav layers (opt-in, mirrors Phoneme's vim_nav / arrow_nav).
+  private get vimNav() { return this.settings.vimNav; }
+  private get arrowNav() { return this.settings.arrowNav; }
+  private get navActive() { return this.settings.vimNav || this.settings.arrowNav; }
   @state() private kbdIndex = -1;            // video-list keyboard cursor (-1 = none)
   private navVids: VideoWithCount[] = [];    // displayed video list, in DOM order (cursor indexes this)
   private seenVidIds = new Set<string>();    // one-shot row-enter animation bookkeeping
@@ -171,7 +175,7 @@ export class App extends LitElement {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
     // While the video list holds focus, its own keydown owns the navigation keys —
     // the player must not also act on j/k/Space/arrows then.
-    if (/^(ArrowUp|ArrowDown|Home|End|Enter| |j|k)$/.test(e.key) && (e.composedPath()[0] as HTMLElement)?.closest?.(".lib")) return;
+    if (this.navActive && (/^(ArrowUp|ArrowDown|Home|End|Enter| )$/.test(e.key) || ((e.key === "j" || e.key === "k") && this.vimNav)) && (e.composedPath()[0] as HTMLElement)?.closest?.(".lib")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
     if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox) return;
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
@@ -789,6 +793,7 @@ export class App extends LitElement {
    *  competes with the player's global j/k/space. Arrows (+ j/k aliases), Home/End
    *  move; Enter opens; Space toggles bulk-select; Esc clears the selection. */
   private onListKey(e: KeyboardEvent) {
+    if (!this.navActive) return;
     const key = e.key === "j" ? "ArrowDown" : e.key === "k" ? "ArrowUp" : e.key;
     const n = this.navVids.length;
     if (!n) return;
@@ -1480,6 +1485,17 @@ export class App extends LitElement {
           <div class="help muted sm">Borderless, clean window with no OS title bar or window buttons — for tiling / keyboard window managers. Use your OS shortcuts to move and close. On Windows, turning this back off may need a restart.</div>
         </section>
         <section class="settings-section">
+          <h3>Motion &amp; navigation</h3>
+          <label class="field"><span>Arrow-key navigation</span>
+            <input type="checkbox" .checked=${this.settings.arrowNav}
+              @change=${(e: Event) => this.setSetting("arrowNav", (e.target as HTMLInputElement).checked)} /></label>
+          <div class="help muted sm">Move with the arrow keys: <span class="kbd2">←</span>/<span class="kbd2">→</span> step between the sidebar, list and video panes; <span class="kbd2">↑</span>/<span class="kbd2">↓</span> move within a pane; <span class="kbd2">Enter</span> opens or activates; <span class="kbd2">Esc</span> steps out. Leave both off to navigate with <span class="kbd2">Tab</span> and the mouse.</div>
+          <label class="field"><span>Vim (hjkl) navigation</span>
+            <input type="checkbox" .checked=${this.settings.vimNav}
+              @change=${(e: Event) => this.setSetting("vimNav", (e.target as HTMLInputElement).checked)} /></label>
+          <div class="help muted sm">System-wide vim keys: <span class="kbd2">h</span>/<span class="kbd2">l</span> move between the sidebar, list and video panes; <span class="kbd2">j</span>/<span class="kbd2">k</span> move within one; <span class="kbd2">Enter</span> activates; <span class="kbd2">Esc</span> steps out. Press <span class="kbd2">?</span> for the full cheat-sheet.</div>
+        </section>
+        <section class="settings-section">
           <h3>Capture</h3>
           <label class="field"><span>Auto-pause when adding a note</span>
             <input type="checkbox" .checked=${this.settings.autopause}
@@ -2136,7 +2152,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "", syncTags: true, phonemeRecipe: "" };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "", syncTags: true, phonemeRecipe: "", vimNav: false, arrowNav: false };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }
