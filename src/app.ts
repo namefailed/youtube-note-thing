@@ -174,8 +174,12 @@ export class App extends LitElement {
   @state() private focusedPane: "sidebar" | "list" | "detail" | null = null;
   private gridRow = -1; private gridCol = 0; private desiredX: number | null = null;
   @state() private navHud: { side: number; label: string } | null = null;
+  @state() private cursorBox: { x: number; y: number; w: number; h: number } | null = null;
+  @state() private playerActive = false;     // cursor is "in" the video → transport keys live
+  private keyboardMode = false;              // the cursor shows only while driving by keyboard
 
   private onKey = (e: KeyboardEvent) => {
+    if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") this.keyboardMode = true;
     if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.closeModal(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
     // While the video list holds focus, its own keydown owns the navigation keys —
@@ -185,7 +189,8 @@ export class App extends LitElement {
          || e.key === "Home" || e.key === "End" || e.key === "Enter" || e.key === " ")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
     if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox) return;
-    if (e.key === "Escape" && this.focusedPane) { e.preventDefault(); this.focusedPane = null; ((this.renderRoot as ShadowRoot).activeElement as HTMLElement | null)?.blur?.(); return; }
+    if (e.key === "Escape" && this.playerActive) { e.preventDefault(); this.playerActive = false; this.cursorToPlayer(); this.placeCursor(true); return; }
+    if (e.key === "Escape" && this.focusedPane) { e.preventDefault(); this.focusedPane = null; this.cursorBox = null; this.navHud = null; ((this.renderRoot as ShadowRoot).activeElement as HTMLElement | null)?.blur?.(); return; }
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
     if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
@@ -195,46 +200,39 @@ export class App extends LitElement {
       this.pendingG = 0;
       if (e.key === "l") { e.preventDefault(); this.focusPane("list"); return; }
       if (e.key === "b") { e.preventDefault(); this.focusPane("sidebar"); return; }
-      if (e.key === "v" || e.key === "d") { e.preventDefault(); this.focusPane("detail"); return; }
+      if (e.key === "v") { e.preventDefault(); this.focusPlayer(); return; }
+      if (e.key === "d") { e.preventDefault(); this.focusPane("detail"); return; }
       if (e.key === "n") { e.preventDefault(); this.view = "notes"; this.focusPane("detail"); return; }
       if (e.key === "t") { e.preventDefault(); this.openTranscript(); this.focusPane("detail"); return; }
       if (e.key === "s") { e.preventDefault(); this.openModal("settings"); return; }
       if (e.key === "D") { e.preventDefault(); this.openModal("doctor"); return; }
       if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
-      if (this.vimNav && e.key === "g") { e.preventDefault(); if (this.focusedPane === "list") { this.kbdIndex = 0; this.scrollListCursor(); } else this.seedGridCursor(this.focusedPane ?? "detail"); return; }
+      if (this.vimNav && e.key === "g") { e.preventDefault(); if (this.focusedPane === "list") this.kbdIndex = 0; else { this.gridRow = 0; this.gridCol = 0; } this.placeCursor(true); return; }
       return;
     }
     this.pendingG = 0;
-    // Spatial grid motion in the focused sidebar / detail pane (the list keeps its own cursor).
-    if (this.navActive && this.focusedPane && this.focusedPane !== "list") {
-      const ARR: Record<string, "h" | "j" | "k" | "l"> = { ArrowLeft: "h", ArrowRight: "l", ArrowUp: "k", ArrowDown: "j" };
-      let nav: "h" | "j" | "k" | "l" | "" = "";
-      if (e.key in ARR && this.arrowNav) nav = ARR[e.key];
-      else if ("hjkl".includes(e.key) && this.vimNav) nav = e.key as "h" | "j" | "k" | "l";
-      if (nav) { e.preventDefault(); this.moveGrid(nav); return; }
-      if (e.key === "Enter" || (e.key === "i" && this.vimNav)) { e.preventDefault(); this.activateGridCell(); return; }
+    const fs = !!document.fullscreenElement;
+    // Spatial navigation owns the keys whenever a nav layer is on and you aren't
+    // fullscreen — so navigation is never eaten by the player.
+    if (this.navActive && !fs && this.handleNav(e)) return;
+    // Player transport. YouTube-style keys reach the player only when you're "in"
+    // it: fullscreen, nav fully off, or you focused the player (g v / Enter on it).
+    if (this.currentId && (!this.navActive || fs || this.playerActive)) {
+      if (e.key === " ") { e.preventDefault(); this.player?.toggle(); return; }
+      if (e.key === "ArrowLeft") { e.preventDefault(); this.player?.seekBy(e.shiftKey ? -30 : -5); return; }
+      if (e.key === "ArrowRight") { e.preventDefault(); this.player?.seekBy(e.shiftKey ? 30 : 5); return; }
+      if (e.key === "+" || e.key === "=") { e.preventDefault(); this.changeRate(0.25); return; }
+      if (e.key === "-" || e.key === "_") { e.preventDefault(); this.changeRate(-0.25); return; }
+      const k = e.key.toLowerCase();
+      if (k === "k") { e.preventDefault(); this.player?.toggle(); return; }
+      if (k === "j") { e.preventDefault(); this.player?.seekBy(-10); return; }
+      if (k === "l") { e.preventDefault(); this.player?.seekBy(10); return; }
+      if (k === "m") { e.preventDefault(); this.player?.toggleMute(); return; }
+      if (k === "f") { e.preventDefault(); this.toggleFullscreen(); return; }
+      if (/^[0-9]$/.test(e.key) && this.dur) { e.preventDefault(); this.player?.seekTo((this.dur * +e.key) / 10); return; }
     }
-    if (this.navActive && this.focusedPane === "list") {
-      if ((e.key === "ArrowLeft" && this.arrowNav) || (e.key === "h" && this.vimNav)) { e.preventDefault(); this.stepPane(-1); return; }
-      if ((e.key === "ArrowRight" && this.arrowNav) || (e.key === "l" && this.vimNav)) { e.preventDefault(); this.stepPane(1); return; }
-    }
-    if (!this.currentId) return;
-    // Transport — drives the player via its JS API, so it works regardless of
-    // whether the iframe or the app has focus (see onFocusIn).
-    if (e.key === " ") { e.preventDefault(); this.player?.toggle(); return; }
-    if (e.key === "ArrowLeft") { e.preventDefault(); this.player?.seekBy(e.shiftKey ? -30 : -5); return; }
-    if (e.key === "ArrowRight") { e.preventDefault(); this.player?.seekBy(e.shiftKey ? 30 : 5); return; }
-    if (e.key === "+" || e.key === "=") { e.preventDefault(); this.changeRate(0.25); return; }
-    if (e.key === "-" || e.key === "_") { e.preventDefault(); this.changeRate(-0.25); return; }
-    const k = e.key.toLowerCase();
-    if (k === "k") { e.preventDefault(); this.player?.toggle(); return; }
-    if (k === "j") { e.preventDefault(); this.player?.seekBy(-10); return; }
-    if (k === "l") { e.preventDefault(); this.player?.seekBy(10); return; }
-    if (k === "m") { e.preventDefault(); this.player?.toggleMute(); return; }
-    if (k === "f") { e.preventDefault(); this.toggleFullscreen(); return; }
-    if (/^[0-9]$/.test(e.key) && this.dur) { e.preventDefault(); this.player?.seekTo((this.dur * +e.key) / 10); return; }
-    // Note selection
-    if (this.editing) return;
+    // Note-list selection — watch mode only (with nav on, notes are reached as grid cells).
+    if (!this.currentId || (this.navActive && !fs) || this.editing) return;
     const list = this.displayed();
     if (!list.length) return;
     const idx = list.findIndex((n) => n.id === this.selectedId);
@@ -251,16 +249,26 @@ export class App extends LitElement {
     const t = e.target as HTMLElement | null;
     if (t && t.tagName === "IFRAME") requestAnimationFrame(() => { try { t.blur(); } catch { /* ignore */ } });
   };
+  // Keep the fixed overlay cursor glued to its cell as panes scroll / the window resizes.
+  private onReflow = () => { if (this.cursorBox) this.placeCursor(false); };
+  // A mouse click hands control back to the pointer: hide the cursor until the next keypress.
+  private onPointer = () => { if (this.keyboardMode) { this.keyboardMode = false; this.cursorBox = null; this.navHud = null; } };
 
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener("keydown", this.onKey, true);
     window.addEventListener("focusin", this.onFocusIn, true);
+    window.addEventListener("scroll", this.onReflow, true);
+    window.addEventListener("resize", this.onReflow);
+    window.addEventListener("pointerdown", this.onPointer, true);
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onKey, true);
     window.removeEventListener("focusin", this.onFocusIn, true);
+    window.removeEventListener("scroll", this.onReflow, true);
+    window.removeEventListener("resize", this.onReflow);
+    window.removeEventListener("pointerdown", this.onPointer, true);
     clearInterval(this.probeTimer);
     this.unlistenPhoneme?.();
     if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
@@ -382,6 +390,9 @@ export class App extends LitElement {
   }
 
   firstUpdated() {
+    // Scroll events don't cross the shadow boundary; capture pane scrolls on the
+    // shadow root so the fixed overlay cursor stays glued to its cell on wheel-scroll.
+    this.renderRoot.querySelectorAll(".lib, aside, main.detail").forEach((p) => p.addEventListener("scroll", this.onReflow, { capture: true, passive: true }));
     this.style.setProperty("--w-sidebar", `${this.paneW.sidebar}px`);
     this.style.setProperty("--w-list", `${this.paneW.list}px`);
     this.refreshVideos();
@@ -860,27 +871,57 @@ export class App extends LitElement {
     else return;
     e.preventDefault();
     this.kbdIndex = i;
-    this.updateComplete.then(() => {
-      const rows = this.renderRoot.querySelectorAll(".lib .libcard");
-      (rows[i] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
-    });
+    this.placeCursor(true);
   }
-  /** Focus a pane (revealing it if collapsed) and land its keyboard cursor. */
+  /** Focus a pane (revealing it if collapsed) and land the keyboard cursor in it. */
   private focusPane(pane: "sidebar" | "list" | "detail") {
     if (!this.navActive) return;
     if (pane === "sidebar" && !this.sidebarOpen) this.toggleSidebar();
     if (pane === "list" && !this.listOpen) this.toggleList();
+    this.playerActive = false;
     this.focusedPane = pane;
+    if (pane !== "list" && this.gridRow < 0) { this.gridRow = 0; this.gridCol = 0; this.desiredX = null; }
+    if (pane === "list" && this.kbdIndex < 0 && this.navVids.length)
+      this.kbdIndex = Math.max(0, this.navVids.findIndex((v) => v.id === this.currentId));
     this.updateComplete.then(() => {
       const sel = pane === "sidebar" ? "#pane-sidebar" : pane === "list" ? ".lib" : "#pane-detail";
       (this.renderRoot.querySelector(sel) as HTMLElement | null)?.focus({ preventScroll: true });
-      if (pane === "list" && this.kbdIndex < 0 && this.navVids.length)
-        this.kbdIndex = Math.max(0, this.navVids.findIndex((v) => v.id === this.currentId));
-      this.seedGridCursor(pane);
+      this.placeCursor(true);
     });
   }
+  /** Enter the video/player context: full YouTube transport keys, Esc to leave. */
+  private focusPlayer() {
+    if (!this.currentId) return;
+    if (!this.navActive) { this.player?.toggle(); return; }
+    this.focusedPane = "detail";
+    this.playerActive = true;
+    this.updateComplete.then(() => {
+      (this.renderRoot.querySelector("#pane-detail") as HTMLElement | null)?.focus({ preventScroll: true });
+      this.placeCursor(true);
+    });
+  }
+  /** Route a key through the spatial nav layer. Returns true if it consumed it. */
+  private handleNav(e: KeyboardEvent): boolean {
+    if (this.playerActive) return false;
+    const a = this.arrowNav, v = this.vimNav;
+    const dir: "h" | "j" | "k" | "l" | "" =
+      ((e.key === "ArrowLeft" && a) || (e.key === "h" && v)) ? "h" :
+      ((e.key === "ArrowRight" && a) || (e.key === "l" && v)) ? "l" :
+      ((e.key === "ArrowUp" && a) || (e.key === "k" && v)) ? "k" :
+      ((e.key === "ArrowDown" && a) || (e.key === "j" && v)) ? "j" : "";
+    const activate = e.key === "Enter" || (e.key === "i" && v);
+    if (!dir && !activate) return false;
+    if (!this.focusedPane) { e.preventDefault(); this.focusPane("list"); return true; }
+    if (this.focusedPane === "list") {
+      if (dir === "h") { e.preventDefault(); this.stepPane(-1); return true; }
+      if (dir === "l") { e.preventDefault(); this.stepPane(1); return true; }
+      return false; // vertical + Enter/Space are owned by the list's own keydown
+    }
+    if (dir) { e.preventDefault(); this.moveGrid(dir); return true; }
+    e.preventDefault(); this.activateGridCell(); return true;
+  }
   // ── Spatial hjkl grid over the sidebar / detail pane (the list uses kbdIndex). ──
-  private GRID_SEL = "button:not([disabled]),summary,input:not([type='hidden']):not([disabled]),.np-title,.tag-chip-body";
+  private GRID_SEL = "#playerWrap,button:not([disabled]),summary,input:not([type='hidden']):not([disabled]),.np-title,.tag-chip-body";
   private PANE_ORDER: Array<"sidebar" | "list" | "detail"> = ["sidebar", "list", "detail"];
   private gridCells(pane: "sidebar" | "detail"): HTMLElement[] {
     const root = this.renderRoot.querySelector(pane === "sidebar" ? "aside" : "main.detail") as HTMLElement | null;
@@ -902,36 +943,58 @@ export class App extends LitElement {
     row.forEach((el, i) => { const d = Math.abs(this.centerX(el) - x); if (d < bd) { bd = d; best = i; } });
     return best;
   }
-  private highlightGrid(pane: "sidebar" | "list" | "detail", scroll = true) {
-    this.renderRoot.querySelectorAll(".kbd-cursor").forEach((el) => el.classList.remove("kbd-cursor"));
-    if (pane === "list") { if (this.navHud) this.navHud = null; return; }
-    const grid = this.bucketByRow(this.gridCells(pane));
-    if (!grid.length || this.gridRow < 0) { if (this.navHud) this.navHud = null; return; }
+  /** Land the detail-grid cursor on the player cell (so Esc out of player mode keeps it there). */
+  private cursorToPlayer() {
+    const grid = this.bucketByRow(this.gridCells("detail"));
+    for (let r = 0; r < grid.length; r++) { const c = grid[r].findIndex((e) => e.id === "playerWrap"); if (c >= 0) { this.gridRow = r; this.gridCol = c; this.desiredX = null; return; } }
+  }
+  /** The element the cursor sits on now: the player, a list row, or a grid cell. */
+  private activeCellEl(): HTMLElement | null {
+    if (!this.navActive || !this.focusedPane) return null;
+    if (this.playerActive) return this.renderRoot.querySelector("#playerWrap");
+    if (this.focusedPane === "list") {
+      const rows = this.renderRoot.querySelectorAll<HTMLElement>(".lib .libcard, .lib .plcard");
+      return rows[Math.max(0, this.kbdIndex)] ?? null;
+    }
+    const grid = this.bucketByRow(this.gridCells(this.focusedPane));
+    if (!grid.length) return null;
     if (this.gridRow >= grid.length) this.gridRow = grid.length - 1;
+    if (this.gridRow < 0) this.gridRow = 0;
     const row = grid[this.gridRow];
     this.gridCol = Math.max(0, Math.min(this.gridCol, row.length - 1));
-    const cell = row[this.gridCol];
-    cell?.classList.add("kbd-cursor");
-    if (scroll) cell?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    const paneEl = this.renderRoot.querySelector(pane === "sidebar" ? "aside" : "main.detail") as HTMLElement | null;
-    const r = paneEl?.getBoundingClientRect();
-    const next = r ? { side: Math.max(8, Math.round(window.innerWidth - r.right + 8)), label: `${pane} · ${this.gridRow + 1}/${grid.length}` } : null;
-    if (next?.side !== this.navHud?.side || next?.label !== this.navHud?.label) this.navHud = next;
+    return row[this.gridCol] ?? null;
+  }
+  /** Put the single overlay cursor on the active cell. `scroll` brings it into view. */
+  private placeCursor(scroll = false) {
+    const modal = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || !!this.confirmBox || !!this.fsNote;
+    const el = (this.keyboardMode && !modal) ? this.activeCellEl() : null;
+    if (!el) { if (this.cursorBox) this.cursorBox = null; if (this.navHud) this.navHud = null; return; }
+    if (scroll) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) { if (this.cursorBox) this.cursorBox = null; return; }
+    const box = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+    if (!this.cursorBox || box.x !== this.cursorBox.x || box.y !== this.cursorBox.y || box.w !== this.cursorBox.w || box.h !== this.cursorBox.h) this.cursorBox = box;
+    const pane = this.focusedPane!;
+    const paneEl = this.renderRoot.querySelector(pane === "sidebar" ? "aside" : pane === "list" ? ".list" : "main.detail") as HTMLElement | null;
+    const pr = paneEl?.getBoundingClientRect();
+    const label = this.playerActive ? "player" : pane;
+    const hud = pr ? { side: Math.max(8, Math.round(window.innerWidth - pr.right + 8)), label } : null;
+    if (hud?.side !== this.navHud?.side || hud?.label !== this.navHud?.label) this.navHud = hud;
   }
   private seedGridCursor(pane: "sidebar" | "list" | "detail") {
-    if (pane === "list") return;
-    if (this.gridRow < 0) { this.gridRow = 0; this.gridCol = 0; this.desiredX = null; }
-    this.highlightGrid(pane);
+    if (pane !== "list" && this.gridRow < 0) { this.gridRow = 0; this.gridCol = 0; this.desiredX = null; }
+    this.placeCursor(true);
   }
   private visiblePanes(): Array<"sidebar" | "list" | "detail"> {
     return this.PANE_ORDER.filter((p) => (p === "list" ? this.listOpen : p === "sidebar" ? this.sidebarOpen : true));
   }
   private stepPane(dir: -1 | 1) {
     const panes = this.visiblePanes();
-    let i = this.focusedPane ? panes.indexOf(this.focusedPane) : panes.indexOf("list");
-    i = Math.max(0, Math.min(panes.length - 1, i + dir));
+    const i = this.focusedPane ? panes.indexOf(this.focusedPane) : panes.indexOf("list");
+    const ni = Math.max(0, Math.min(panes.length - 1, i + dir));
+    if (ni === i) return;
     this.gridRow = -1; this.gridCol = 0; this.desiredX = null;
-    this.focusPane(panes[i]);
+    this.focusPane(panes[ni]);
   }
   private moveGrid(nav: "h" | "j" | "k" | "l"): boolean {
     const pane = this.focusedPane;
@@ -939,8 +1002,9 @@ export class App extends LitElement {
     const grid = this.bucketByRow(this.gridCells(pane));
     if (!grid.length) return false;
     if (this.gridRow < 0) { this.gridRow = 0; this.gridCol = 0; }
+    if (this.gridRow >= grid.length) this.gridRow = grid.length - 1;
     if (nav === "h" || nav === "l") {
-      const row = grid[Math.min(this.gridRow, grid.length - 1)]; const next = this.gridCol + (nav === "l" ? 1 : -1);
+      const row = grid[this.gridRow]; const next = this.gridCol + (nav === "l" ? 1 : -1);
       if (next < 0) { this.stepPane(-1); return true; }
       if (next >= row.length) { this.stepPane(1); return true; }
       this.gridCol = next; this.desiredX = null;
@@ -950,19 +1014,14 @@ export class App extends LitElement {
       if (next < 0 || next >= grid.length) return true;
       this.gridRow = next; this.gridCol = this.nearestCol(grid[next], this.desiredX ?? 0);
     }
-    this.highlightGrid(pane);
+    this.placeCursor(true);
     return true;
   }
   private activateGridCell() {
-    const cell = this.renderRoot.querySelector(".kbd-cursor") as HTMLElement | null;
+    const cell = this.activeCellEl();
     if (!cell) return;
+    if (cell.id === "playerWrap") { this.playerActive = true; this.placeCursor(true); return; }
     if (cell.matches("input,.tag-add,.np-title")) cell.focus(); else cell.click();
-  }
-  private scrollListCursor() {
-    this.updateComplete.then(() => {
-      const rows = this.renderRoot.querySelectorAll(".lib .libcard");
-      (rows[Math.max(0, this.kbdIndex)] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
-    });
   }
   private async bulkDelete() {
     const ids = [...this.selected];
@@ -1128,9 +1187,8 @@ export class App extends LitElement {
   updated() {
     this.toggleAttribute("collapsed", !this.sidebarOpen);
     this.toggleAttribute("nolist", !this.listOpen);
-    this.setAttribute("nav-pane", this.focusedPane ?? "");
-    if (this.navActive && this.focusedPane && this.focusedPane !== "list" && this.gridRow >= 0)
-      this.highlightGrid(this.focusedPane, false);
+    this.placeCursor(false);
+    this.setAttribute("nav-pane", this.focusedPane && this.cursorBox ? this.focusedPane : "");
   }
   private allTags(): string[] {
     return [...new Set(this.videos.flatMap((v) => v.tags))].sort((a, b) => a.localeCompare(b));
@@ -1298,7 +1356,7 @@ export class App extends LitElement {
           ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v, i) => {
             const sub = [v.channel, v.view_count != null ? formatViews(v.view_count) : "", v.published_at ? relativeDate(v.published_at) : ""].filter(Boolean);
             return html`
-            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""} ${i === this.kbdIndex ? "kbd" : ""} ${this.freshVidIds.has(v.id) ? "fresh" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
+            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""} ${this.freshVidIds.has(v.id) ? "fresh" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
               <div class="thumbwrap">
                 <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                   @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
@@ -1464,10 +1522,13 @@ export class App extends LitElement {
       ${this.toasts.length ? html`<div class="toasts" role="status" aria-live="polite">
         ${this.toasts.map((t) => html`<div class="toast ${t.kind} ${t.out ? "out" : ""}"><span class="ti">${t.kind === "ok" ? "✓" : t.kind === "err" ? "✕" : "i"}</span><span>${t.msg}</span></div>`)}
       </div>` : nothing}
-      ${this.navActive && this.focusedPane && this.focusedPane !== "list" && this.navHud ? html`
+      ${this.cursorBox ? html`<div class="kbd-cur ${this.playerActive ? "playing" : ""}" style="transform:translate(${this.cursorBox.x}px,${this.cursorBox.y}px);width:${this.cursorBox.w}px;height:${this.cursorBox.h}px"></div>` : nothing}
+      ${this.cursorBox && this.navHud ? html`
         <div class="navhud" style="right:${this.navHud.side}px">
           <span class="navhud-pane">${this.navHud.label}</span>
-          <span class="navhud-keys"><kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd> move · <kbd>↵</kbd> open · <kbd>esc</kbd> out</span>
+          <span class="navhud-keys">${this.playerActive
+            ? html`<kbd>space</kbd> play · <kbd>j</kbd><kbd>l</kbd> ±10s · <kbd>←</kbd><kbd>→</kbd> seek · <kbd>esc</kbd> back`
+            : html`<kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd> move · <kbd>↵</kbd> open · <kbd>esc</kbd> out`}</span>
         </div>` : nothing}
     `;
   }
@@ -1982,20 +2043,20 @@ export class App extends LitElement {
     .libcard.sel:hover { background:color-mix(in srgb, var(--accent) 17%, transparent); }
     .libcard.sel.active, .libcard.sel.active:hover { transform:none; background:color-mix(in srgb, var(--accent) 22%, transparent);
       box-shadow:inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 80%, white), 0 2px 16px color-mix(in srgb, var(--accent) 22%, transparent); }
-    /* Keyboard cursor (--kbd-cursor): left rail + ring. Dimmed when the list isn't
-       focused, full when it is; active always beats it via :not(.active). */
-    .lib .libcard.kbd:not(.active) { box-shadow:inset 3px 0 0 color-mix(in srgb, var(--kbd-cursor) 45%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--kbd-cursor) 24%, transparent); background:color-mix(in srgb, var(--kbd-cursor) 6%, transparent); }
-    .lib:focus-within .libcard.kbd:not(.active) { box-shadow:inset 3px 0 0 var(--kbd-cursor), inset 0 0 0 1px color-mix(in srgb, var(--kbd-cursor) 55%, transparent); background:color-mix(in srgb, var(--kbd-cursor) 12%, transparent); }
     .lib:focus-within .libcard { transition:none; transform:none; }
     .lib:focus { outline:none; }
     /* The focused pane shows a faint accent rail (Phoneme's .rv-pane-focused). */
     :host([nav-pane="sidebar"]) aside, :host([nav-pane="list"]) .list, :host([nav-pane="detail"]) main.detail {
       box-shadow:inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
     aside:focus, main.detail:focus { outline:none; }
-    /* Spatial grid cursor: ring + soft glow on the current actionable cell. */
-    .kbd-cursor { position:relative; border-radius:var(--r-sm);
-      box-shadow:0 0 0 1px color-mix(in srgb, var(--kbd-cursor) 60%, transparent), 0 0 0 4px color-mix(in srgb, var(--kbd-cursor) 18%, transparent);
-      transition:box-shadow var(--ui-motion-fast) ease; }
+    /* One floating overlay cursor — positioned over the active cell, glides between
+       them. No per-cell classes, so nothing is ever left behind on Esc / re-render. */
+    /* Snaps to the active cell each move (the authoritative cursor, Phoneme-style).
+       No transform transition — it fights the per-render reposition and stalls. */
+    .kbd-cur { position:fixed; left:0; top:0; pointer-events:none; z-index:60; border-radius:var(--r-sm); will-change:transform;
+      box-shadow:0 0 0 2px var(--kbd-cursor), 0 0 0 5px color-mix(in srgb, var(--kbd-cursor) 22%, transparent), 0 6px 22px color-mix(in srgb, var(--kbd-cursor) 28%, transparent); }
+    .kbd-cur.playing { box-shadow:0 0 0 2px var(--accent), 0 0 0 6px color-mix(in srgb, var(--accent) 26%, transparent), 0 8px 26px color-mix(in srgb, var(--accent) 32%, transparent); }
+    @media (prefers-reduced-motion: reduce) { .kbd-cur { transition:none; } }
     /* Nav HUD — flexes to the edge of whichever pane is keyboard-driven. */
     .navhud { position:fixed; bottom:16px; z-index:55; display:flex; flex-direction:column; gap:4px;
       padding:8px 12px; border-radius:10px; pointer-events:none;
