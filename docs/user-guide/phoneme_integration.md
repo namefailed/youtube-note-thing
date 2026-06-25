@@ -42,6 +42,10 @@ A small colored dot sits at the far right of the top bar, next to the **Settings
 
 Behind the scenes ytnt stores the new recording's id on the video, so the link survives restarts. Once a video is linked, the **Transcribe** button is replaced by the transcript itself.
 
+### Choosing a pipeline (recipe)
+
+If you've configured custom **Playbook recipes** in Phoneme, a **Recipe** dropdown appears next to **Transcribe with Phoneme**. Pick one to run the transcription through that recipe in a single pass (no separate re-run needed); your choice is remembered. The dropdown only shows when you have more than the built-in **Default** recipe, and it lists only recording-scope recipes (meeting templates don't apply to a single video). Leave it on **Default** for the standard pipeline.
+
 > [!NOTE]
 > Downloading the audio happens up front and can take a moment for long videos; the flash stays up until Phoneme has accepted the job.
 
