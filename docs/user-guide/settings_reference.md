@@ -12,6 +12,7 @@ Open Settings from the **gear** button in the top bar. Every change saves the mo
 | Section | What it controls |
 | --- | --- |
 | **[Appearance](#-appearance)** | Color theme and whether the OS title bar is stripped. |
+| **[Motion & navigation](#-motion--navigation)** | Opt-in arrow-key and vim (hjkl) keyboard navigation. |
 | **[Capture](#-capture)** | Auto-pause on note, and how many seconds before your keypress the timestamp lands. |
 | **[Storage & backup](#-storage--backup)** | The Markdown vault folder, plus JSON export/import of your whole library. |
 | **[Phoneme](#-phoneme)** | Path to the Phoneme CLI and two-way tag sync. |
@@ -42,6 +43,15 @@ Pick one and the whole app re-tints instantly. Catppuccin Mocha is the default b
 > On Windows, turning **Strip system title bar** back **off** may need an app restart before the title bar returns.
 
 The deep dive on themes and the borderless window — including how it interacts with fullscreen — is in [Appearance & window](appearance_and_window.md).
+
+## 🧭 Motion & navigation
+
+| Area | What it controls |
+| --- | --- |
+| **Arrow-key navigation** (`arrowNav`, default off) | Move around with the arrow keys — `←`/`→` step between panes, `↑`/`↓` move within one. |
+| **Vim (hjkl) navigation** (`vimNav`, default off) | The same on `h`/`j`/`k`/`l`, plus the `G`-leader pane jumps. |
+
+Both are **off by default**, so the arrow keys and `H`/`J`/`K`/`L` keep their player meanings until you opt in. The two layers are independent and combine — enable either or both. With a layer on, focus a pane (`G` then `L`/`B`/`V`, or click it) and move the cursor through every control; the focused pane shows an accent rail and a small HUD, and `Esc` steps out. The full key tables are in [Keyboard shortcuts → Keyboard navigation](keyboard_shortcuts.md#keyboard-navigation).
 
 ## ⏱️ Capture
 

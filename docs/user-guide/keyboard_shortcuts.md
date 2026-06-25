@@ -13,7 +13,7 @@ A few rules govern when a key does something:
 - **Modals capture the keyboard.** When the search, settings, find & replace, tag manager, or cheat-sheet overlay is open, playback and note-list shortcuts are disabled. `Esc` closes the open overlay; `Tab` cycles focus within it.
 - **Transport keys need a loaded video.** Play/pause, seek, speed, mute, fullscreen, and the `0`–`9` seek keys only fire when a video is open in the detail pane.
 - **Note-list keys need notes.** `↑`/`↓`/`Enter`/`Delete` act on the current video's note list and are ignored while you're editing a note.
-- **List-cursor keys need list focus.** When the video list pane is focused (press `G` then `V`, or click it), `↑`/`↓`/`Home`/`End`/`Enter`/`Space` drive the video-list cursor instead — so they never collide with the player or the note list.
+- **Keyboard navigation is opt-in.** The app-wide nav layer — pane jumps and the `h`/`j`/`k`/`l` cursor — is off until you turn on **Arrow-key** and/or **Vim (hjkl)** navigation in *Settings → Motion & navigation*. With it on, the focused pane shows an accent rail and a small HUD, and `Esc` steps back out. See [Keyboard navigation](#keyboard-navigation) below.
 - **The player keeps listening even when the video has focus.** Clicking the YouTube frame normally hands keyboard focus to the embed; ytnt quietly returns focus to the app and drives playback through the player's own API, so your shortcuts keep working either way.
 
 > [!NOTE]
@@ -92,15 +92,43 @@ When you capture a note while the video is fullscreen, a single-line overlay inp
 | `Enter` | Save the note and (if auto-pause is on) resume playback |
 | `Esc` | Cancel and resume playback |
 
-## Library and selection
+## Keyboard navigation
 
-The video list has a keyboard cursor. Focus the list first — press `G` then `V`, or click anywhere in it — and a highlighted cursor appears (its own color, distinct from the open video's accent ring). These keys act only while the list is focused, so they never interfere with the player's `J`/`K`/`Space`.
+ytnt has an optional, app-wide keyboard layer modelled on Phoneme. It is **off by default** — turn on **Arrow-key navigation**, **Vim (hjkl) navigation**, or both in **Settings → Motion & navigation**. Arrow keys drive navigation when arrow-nav is on; `H`/`J`/`K`/`L` drive it when vim-nav is on; the two layers are independent and combine. The focused pane shows a faint accent rail, and a small HUD pins to its edge showing where the cursor sits. `Esc` steps out.
+
+### Jump to a pane or view (`G` leader)
+
+Press `G`, then a destination:
 
 | Keys | Action |
 | --- | --- |
-| `G` then `V` | Focus the video list (turns on the cursor) |
-| `↑` / `↓`  (or `J` / `K`) | Move the cursor to the previous / next video |
-| `Home` / `End` | Jump to the first / last video |
+| `G` then `L` | Focus the video list |
+| `G` then `B` | Focus the sidebar filters |
+| `G` then `V` / `D` | Focus the video / detail pane |
+| `G` then `N` / `T` | Switch the detail pane to Notes / Transcript |
+| `G` then `S` | Open Settings |
+| `G` then `Shift + D` | Open Diagnostics |
+| `G` then `/` | Search all notes |
+
+The `G` chords that open a modal (`G S`, `G /`, `G Shift+D`) work even with nav disabled; the pane-focus chords need a nav layer on.
+
+### Move the cursor
+
+Once a pane is focused, the cursor moves through its controls:
+
+| Keys | Action |
+| --- | --- |
+| `H` / `L` (or `←` / `→`) | Move left / right — at a pane's edge, step to the next pane |
+| `J` / `K` (or `↓` / `↑`) | Move down / up within the pane |
+| `Enter` (or `I`) | Activate the cursored control |
+| `Esc` | Drop the pane focus |
+
+In the **sidebar** and **detail** panes the cursor is a 2-D grid: controls are bucketed into rows, and your column is kept (nearest-match) as you move up and down. In the **video list** the cursor is a single vertical column with a few extra keys:
+
+| Keys | Action |
+| --- | --- |
+| `↑` / `↓` (or `J` / `K`) | Previous / next video |
+| `Home` / `End` | First / last video |
 | `Enter` | Open (or close) the cursored video |
 | `Space` | Toggle the cursored video in the bulk selection |
 | `Esc` | Clear the bulk selection |
@@ -147,6 +175,9 @@ Press `?` to open the built-in cheat sheet. It mirrors this reference for the ev
 | `M / F` | Mute / fullscreen |
 | `Ctrl+B` | Toggle sidebar |
 | `Shift+click` | Select videos (bulk) |
+| `G then L / B` | Focus the list / sidebar filters |
+| `G then V / D` | Focus the video / detail pane |
+| `H J K L` | Move the cursor (a pane focused, nav on) |
 | `0–9` | Seek to 0–90% |
 | `↑ / ↓` | Select previous / next note |
 | `Enter / Delete` | Edit / delete selected note |
