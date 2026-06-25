@@ -8,7 +8,7 @@ import { renderMarkdown } from "./markdown";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
-import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 
 // Lazy + guarded: outside the Tauri runtime (e.g. a browser preview) this is
@@ -130,6 +130,9 @@ export class App extends LitElement {
   @state() private phonemeVersion = "";
   @state() private phonemePath = "";
   @state() private doctorOpen = false;
+  // In-app themed confirm (replaces the unstyleable native OS dialog).
+  @state() private confirmBox: { title: string; message: string; confirmLabel: string; kind: "warning" | "danger" } | null = null;
+  private confirmResolve: ((v: boolean) => void) | null = null;
   private probeTimer = 0;
   @state() private view: "notes" | "transcript" = "notes";
   @state() private rate = 1;
@@ -162,7 +165,7 @@ export class App extends LitElement {
     if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
-    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen) return;
+    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox) return;
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
     if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
@@ -551,6 +554,19 @@ export class App extends LitElement {
     const target = this.lastFocus; this.lastFocus = null;
     this.updateComplete.then(() => { try { target?.focus(); } catch { /* trigger gone */ } });
   }
+  /** Themed in-app confirm. Resolves true on confirm, false on cancel/Esc. */
+  private confirm(message: string, opts: { title?: string; confirmLabel?: string; kind?: "warning" | "danger" } = {}): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.confirmResolve = resolve;
+      this.confirmBox = { message, title: opts.title ?? "Are you sure?", confirmLabel: opts.confirmLabel ?? "Confirm", kind: opts.kind ?? "warning" };
+      this.updateComplete.then(() => (this.renderRoot.querySelector(".confirm-yes") as HTMLElement)?.focus());
+    });
+  }
+  private answerConfirm(v: boolean) {
+    this.confirmBox = null;
+    const r = this.confirmResolve; this.confirmResolve = null;
+    r?.(v);
+  }
   private trapTab(e: KeyboardEvent) {
     if (e.key !== "Tab") return;
     const items = this.focusables();
@@ -624,13 +640,7 @@ export class App extends LitElement {
   }
   /** The linked recording id no longer resolves in Phoneme — offer to unlink. */
   private async offerUnlinkDeadRef() {
-    let yes = false;
-    try {
-      yes = await confirmDialog(
-        "This video is linked to a Phoneme recording that no longer exists. Unlink it?",
-        { title: "Recording not found", kind: "warning" });
-    } catch { /* dialog unavailable — leave the link, just notify */ }
-    if (yes) await this.unlinkRef();
+    if (await this.confirm("This video is linked to a Phoneme recording that no longer exists. Unlink it?", { title: "Recording not found", confirmLabel: "Unlink" })) await this.unlinkRef();
     else this.flash("Phoneme recording not found.", "err");
   }
   /** Phoneme is installed but its daemon isn't answering — start it. */
@@ -829,11 +839,9 @@ export class App extends LitElement {
     try { pls = await api.videoPlaylists(id); } catch { /* offline / not connected */ }
     let alsoRemove = false;
     if (pls.length) {
-      try {
-        alsoRemove = await confirmDialog(
-          `Also remove it from your YouTube playlist${pls.length > 1 ? "s" : ""}: ${pls.map((p) => p.playlist_title).join(", ")}?`,
-          { title: "Remove from playlist?", kind: "warning" });
-      } catch { /* dialog unavailable */ }
+      alsoRemove = await this.confirm(
+        `Also remove it from your YouTube playlist${pls.length > 1 ? "s" : ""}: ${pls.map((p) => p.playlist_title).join(", ")}?`,
+        { title: "Remove from playlist?", confirmLabel: "Remove", kind: "danger" });
     }
     await api.deleteVideo(id);
     if (alsoRemove) {
@@ -867,12 +875,7 @@ export class App extends LitElement {
   private async removeFromPlaylist(it: PlaylistItem) {
     const pl = this.plFilter;
     if (!pl) return;
-    let ok = true;
-    try {
-      ok = await confirmDialog(`Remove “${it.title}” from “${pl.title}”? It stays in your library.`,
-        { title: "Remove from playlist?", kind: "warning" });
-    } catch { /* dialog unavailable — honor the click */ }
-    if (!ok) return;
+    if (!(await this.confirm(`Remove “${it.title}” from “${pl.title}”? It stays in your library.`, { title: "Remove from playlist?", confirmLabel: "Remove", kind: "danger" }))) return;
     try {
       await api.googleRemovePlaylistItem(this.settings.gClientId, this.settings.gClientSecret, pl.id, it.video_id, it.item_id);
       this.plItems = this.plItems.filter((x) => x.item_id !== it.item_id);
@@ -1240,6 +1243,7 @@ export class App extends LitElement {
       ${this.findReplaceOpen ? this.renderFindReplace() : nothing}
       ${this.tagMgrOpen ? this.renderTagManager() : nothing}
       ${this.doctorOpen ? this.renderDoctor() : nothing}
+      ${this.confirmBox ? this.renderConfirm() : nothing}
       ${this.selected.size ? html`<div class="bulkbar" style=${this.bulkPos
           ? `left:${this.bulkPos.x}px; top:${this.bulkPos.y}px;`
           : `left:50%; bottom:24px; transform:translateX(-50%);`}>
@@ -1365,6 +1369,20 @@ export class App extends LitElement {
             </div>
             ${c.fix ? html`<button class="btn doctor-fix" @click=${() => c.fix!.run()}>${c.fix.label}</button>` : nothing}
           </div>`)}
+        </div>
+      </div>
+    </div>`;
+  }
+  private renderConfirm() {
+    const c = this.confirmBox!;
+    return html`<div class="overlay confirm-overlay" @click=${() => this.answerConfirm(false)}
+      @keydown=${(e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); this.answerConfirm(false); } else if (e.key === "Enter") { e.preventDefault(); this.answerConfirm(true); } }}>
+      <div class="panel confirm-box" role="alertdialog" aria-modal="true" aria-label=${c.title} @click=${(e: Event) => e.stopPropagation()}>
+        <div class="confirm-title">${c.title}</div>
+        <div class="confirm-msg">${c.message}</div>
+        <div class="confirm-actions">
+          <button class="btn" @click=${() => this.answerConfirm(false)}>Cancel</button>
+          <button class="btn ${c.kind === "danger" ? "danger" : "primary"} confirm-yes" @click=${() => this.answerConfirm(true)}>${c.confirmLabel}</button>
         </div>
       </div>
     </div>`;
@@ -1998,6 +2016,15 @@ export class App extends LitElement {
       padding:16px; width:min(640px,92vw); max-height:74vh; overflow:auto; display:flex; flex-direction:column; gap:12px; }
     /* Inset the panel's scrollbar so it clears the 14px rounded corners. */
     .panel::-webkit-scrollbar-track { margin:14px 0; }
+    /* Themed confirm dialog (replaces the native OS dialog) */
+    .confirm-overlay { z-index:60; align-items:center; padding-top:0; }
+    .confirm-box { width:min(420px,90vw); gap:14px; padding:20px 20px 18px; }
+    .confirm-title { font-weight:650; font-size:15px; }
+    .confirm-msg { font-size:13px; line-height:1.55; color:var(--fg-muted); }
+    .confirm-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:2px; }
+    .confirm-actions .btn { padding:7px 15px; }
+    .confirm-actions .danger { background:var(--err); border-color:var(--err); color:var(--bg-deep); font-weight:600; }
+    .confirm-actions .danger:hover { background:color-mix(in srgb, var(--err), black 12%); }
     /* Diagnostics ("ytnt doctor") */
     .doctor-list { display:flex; flex-direction:column; gap:7px; }
     .doctor-row { display:flex; align-items:flex-start; gap:10px; padding:9px 11px; border-radius:var(--r-sm); background:var(--bg-deep); border:1px solid var(--border-subtle); }
