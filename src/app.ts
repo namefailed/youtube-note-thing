@@ -169,6 +169,7 @@ export class App extends LitElement {
   private seenVidIds = new Set<string>();    // one-shot row-enter animation bookkeeping
   private freshVidIds = new Set<string>();
   private pendingG = 0;                       // `g` chord arm timestamp
+  @state() private focusedPane: "sidebar" | "list" | "detail" | null = null;
 
   private onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.cheatOpen = false; this.findReplaceOpen = false; this.closeModal(); return; }
@@ -178,12 +179,25 @@ export class App extends LitElement {
     if (this.navActive && (/^(ArrowUp|ArrowDown|Home|End|Enter| )$/.test(e.key) || ((e.key === "j" || e.key === "k") && this.vimNav)) && (e.composedPath()[0] as HTMLElement)?.closest?.(".lib")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
     if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox) return;
+    if (e.key === "Escape" && this.focusedPane) { e.preventDefault(); this.focusedPane = null; ((this.renderRoot as ShadowRoot).activeElement as HTMLElement | null)?.blur?.(); return; }
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
     if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
-    // `g v` focuses the video list (opts into list keyboard-nav, Phoneme-style).
+    // `g` leader → jump to a pane / view (Phoneme-style "go to" chords).
     if (e.key === "g") { e.preventDefault(); this.pendingG = Date.now(); return; }
-    if (this.pendingG && e.key === "v" && Date.now() - this.pendingG < 1000) { this.pendingG = 0; e.preventDefault(); (this.renderRoot.querySelector(".lib") as HTMLElement)?.focus(); return; }
+    if (this.pendingG && Date.now() - this.pendingG < 1000) {
+      this.pendingG = 0;
+      if (e.key === "l") { e.preventDefault(); this.focusPane("list"); return; }
+      if (e.key === "b") { e.preventDefault(); this.focusPane("sidebar"); return; }
+      if (e.key === "v" || e.key === "d") { e.preventDefault(); this.focusPane("detail"); return; }
+      if (e.key === "n") { e.preventDefault(); this.view = "notes"; this.focusPane("detail"); return; }
+      if (e.key === "t") { e.preventDefault(); this.openTranscript(); this.focusPane("detail"); return; }
+      if (e.key === "s") { e.preventDefault(); this.openModal("settings"); return; }
+      if (e.key === "D") { e.preventDefault(); this.openModal("doctor"); return; }
+      if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
+      if (this.vimNav && e.key === "g") { e.preventDefault(); if (this.focusedPane === "list") { this.kbdIndex = 0; this.scrollListCursor(); } else this.seedGridCursor(this.focusedPane ?? "detail"); return; }
+      return;
+    }
     this.pendingG = 0;
     if (!this.currentId) return;
     // Transport — drives the player via its JS API, so it works regardless of
@@ -813,6 +827,27 @@ export class App extends LitElement {
       (rows[i] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
     });
   }
+  /** Focus a pane (revealing it if collapsed) and land its keyboard cursor. */
+  private focusPane(pane: "sidebar" | "list" | "detail") {
+    if (!this.navActive) return;
+    if (pane === "sidebar" && !this.sidebarOpen) this.toggleSidebar();
+    if (pane === "list" && !this.listOpen) this.toggleList();
+    this.focusedPane = pane;
+    this.updateComplete.then(() => {
+      const sel = pane === "sidebar" ? "#pane-sidebar" : pane === "list" ? ".lib" : "#pane-detail";
+      (this.renderRoot.querySelector(sel) as HTMLElement | null)?.focus({ preventScroll: true });
+      if (pane === "list" && this.kbdIndex < 0 && this.navVids.length)
+        this.kbdIndex = Math.max(0, this.navVids.findIndex((v) => v.id === this.currentId));
+      this.seedGridCursor(pane);
+    });
+  }
+  private seedGridCursor(_pane: "sidebar" | "list" | "detail") { /* filled in Phase 3 */ }
+  private scrollListCursor() {
+    this.updateComplete.then(() => {
+      const rows = this.renderRoot.querySelectorAll(".lib .libcard");
+      (rows[Math.max(0, this.kbdIndex)] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
+    });
+  }
   private async bulkDelete() {
     const ids = [...this.selected];
     for (const id of ids) { if (id === this.currentId) this.deselect(); await api.deleteVideo(id); }
@@ -977,6 +1012,7 @@ export class App extends LitElement {
   updated() {
     this.toggleAttribute("collapsed", !this.sidebarOpen);
     this.toggleAttribute("nolist", !this.listOpen);
+    this.setAttribute("nav-pane", this.focusedPane ?? "");
   }
   private allTags(): string[] {
     return [...new Set(this.videos.flatMap((v) => v.tags))].sort((a, b) => a.localeCompare(b));
@@ -1068,7 +1104,7 @@ export class App extends LitElement {
       <div class="resizer rz-sidebar" title="Drag to resize" @pointerdown=${(e: PointerEvent) => this.startResize("sidebar", e)}></div>
       <div class="resizer rz-list" title="Drag to resize" @pointerdown=${(e: PointerEvent) => this.startResize("list", e)}></div>
 
-      <aside ?inert=${trapped}>
+      <aside ?inert=${trapped} tabindex="-1" id="pane-sidebar">
         <div class="section">
           <div class="sec-head-row">
             <button class="sec-head" @click=${() => this.toggleFold("lib")}>
@@ -1138,7 +1174,7 @@ export class App extends LitElement {
       </aside>
 
       <section class="list" ?inert=${trapped}>
-        <div class="lib" tabindex="0"
+        <div class="lib" id="pane-list" tabindex="0"
           @focusin=${() => { if (this.kbdIndex < 0 && this.navVids.length) this.kbdIndex = Math.max(0, this.navVids.findIndex((v) => v.id === this.currentId)); }}
           @keydown=${(e: KeyboardEvent) => this.onListKey(e)}>
           ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v, i) => {
@@ -1167,7 +1203,7 @@ export class App extends LitElement {
         </div>
       </section>
 
-      <main class="detail" ?inert=${trapped}>
+      <main class="detail" ?inert=${trapped} tabindex="-1" id="pane-detail">
         ${this.current ? html`<div class="nowplaying">
           <div class="np-main">
             ${this.titleEditing
@@ -1718,11 +1754,15 @@ export class App extends LitElement {
       ["M / F", "Mute / fullscreen"],
       ["Ctrl+B", "Toggle sidebar"],
       ["Shift+click", "Select videos (bulk)"],
-      ["G then V", "Focus the video list"],
-      ["↑ / ↓  (J / K)", "Move list cursor — when the list is focused"],
-      ["Home / End", "First / last video"],
-      ["Enter", "Open / close the cursored video"],
-      ["Space", "Select / deselect video (bulk)"],
+      ["G then L / B", "Focus the list / sidebar filters"],
+      ["G then V / D", "Focus the video / detail pane"],
+      ["G then N / T", "Notes / Transcript view"],
+      ["G then S", "Open settings"],
+      ["H J K L", "Move the cursor — a pane focused (nav on)"],
+      ["↑ ↓ ← →", "Move within / step between panes (arrow nav)"],
+      ["Home / End", "First / last in the list"],
+      ["Enter", "Open / activate the cursored item"],
+      ["Space", "Select / deselect a video (bulk)"],
       ["0–9", "Seek to 0–90%"],
       ["↑ / ↓", "Select previous / next note"],
       ["Enter / Delete", "Edit / delete selected note"],
@@ -1825,6 +1865,10 @@ export class App extends LitElement {
     .lib:focus-within .libcard.kbd:not(.active) { box-shadow:inset 3px 0 0 var(--kbd-cursor), inset 0 0 0 1px color-mix(in srgb, var(--kbd-cursor) 55%, transparent); background:color-mix(in srgb, var(--kbd-cursor) 12%, transparent); }
     .lib:focus-within .libcard { transition:none; transform:none; }
     .lib:focus { outline:none; }
+    /* The focused pane shows a faint accent rail (Phoneme's .rv-pane-focused). */
+    :host([nav-pane="sidebar"]) aside, :host([nav-pane="list"]) .list, :host([nav-pane="detail"]) main.detail {
+      box-shadow:inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+    aside:focus, main.detail:focus { outline:none; }
     /* New imports fade in once (reduced-motion zeros --ui-motion → instant). */
     .libcard.fresh { animation:recRowIn var(--ui-motion) cubic-bezier(.22,.61,.36,1); }
     @keyframes recRowIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
