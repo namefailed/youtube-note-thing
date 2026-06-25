@@ -68,8 +68,10 @@ export const api = {
   setPhonemeBin: (path: string) => invoke<void>("set_phoneme_bin", { path }),
   phonemeRecording: (id: string) => invoke<PhonemeRec>("phoneme_recording", { id }),
   phonemeVersions: (id: string) => invoke<TranscriptVersion[]>("phoneme_versions", { id }),
-  phonemeSseStart: () => invoke<void>("phoneme_sse_start"),
-  phonemeSseStop: () => invoke<void>("phoneme_sse_stop"),
+  phonemeWatchStart: () => invoke<void>("phoneme_watch_start"),
+  phonemeWatchStop: () => invoke<void>("phoneme_watch_stop"),
+  phonemeDaemonStart: () => invoke<void>("phoneme_daemon_start"),
+  phonemeFindRecording: (videoId: string) => invoke<string | null>("phoneme_find_recording", { videoId }),
   importYoutubePlaylist: (playlistId: string) =>
     invoke<number>("import_youtube_playlist", { playlistId }),
   googleStatus: () => invoke<boolean>("google_status"),

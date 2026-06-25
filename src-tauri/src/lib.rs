@@ -207,10 +207,7 @@ struct PhonemeTag {
 /// on a shared tag. Empty when the daemon is down or Phoneme isn't installed.
 #[tauri::command]
 fn phoneme_tags() -> Vec<PhonemeTag> {
-    let Ok(out) = run_phoneme(&["--json", "tag", "list", "--all"]) else {
-        return vec![];
-    };
-    serde_json::from_str(&out).unwrap_or_default()
+    run_phoneme_json(&["tag", "list", "--all"]).unwrap_or_default()
 }
 
 /// Tags attached to ONE Phoneme recording — the pull side of membership sync.
@@ -219,8 +216,7 @@ fn phoneme_tags() -> Vec<PhonemeTag> {
 /// everything.
 #[tauri::command]
 fn phoneme_tags_for(rec_id: String) -> Result<Vec<PhonemeTag>, String> {
-    let out = run_phoneme(&["--json", "tag", "for", &rec_id])?;
-    serde_json::from_str(&out).map_err(|e| format!("parse tags: {e}"))
+    run_phoneme_json(&["tag", "for", &rec_id])
 }
 
 /// Push membership changes for one recording: create-if-missing (with the
@@ -261,6 +257,23 @@ fn phoneme_update_tag(id: i64, name: String, color: Option<String>) -> Result<()
         }
     }
     run_phoneme(&args).map(|_| ())
+}
+
+/// Run `phoneme --json <args>` and deserialize stdout into `T` — the typed
+/// wrapper that replaces hand-parsing CLI output. Errors carry the parse failure
+/// so a drifted contract is visible, not silently empty.
+fn run_phoneme_json<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<T, String> {
+    let mut full = vec!["--json"];
+    full.extend_from_slice(args);
+    let out = run_phoneme(&full)?;
+    serde_json::from_str(out.trim()).map_err(|e| format!("parse `phoneme {}`: {e}", args.join(" ")))
+}
+
+/// Start Phoneme's background daemon (`phoneme daemon start` — spawns it detached
+/// and returns immediately). Used by the "daemon not responding → start it" path.
+#[tauri::command]
+fn phoneme_daemon_start() -> Result<(), String> {
+    run_phoneme(&["daemon", "start"]).map(|_| ())
 }
 
 /// Is the Phoneme CLI present and its daemon reachable?
@@ -371,10 +384,29 @@ struct PhonemeRecipe {
 /// transcription-pipeline picker. Empty when the daemon/CLI isn't reachable.
 #[tauri::command]
 fn phoneme_recipes() -> Vec<PhonemeRecipe> {
-    let Ok(out) = run_phoneme(&["--json", "recipes"]) else {
-        return vec![];
-    };
-    serde_json::from_str(&out).unwrap_or_default()
+    run_phoneme_json(&["recipes"]).unwrap_or_default()
+}
+
+#[derive(serde::Deserialize)]
+struct RecRow {
+    id: String,
+    #[serde(default)]
+    audio_path: String,
+}
+
+/// Best-effort reconcile: find an existing Phoneme recording for a YouTube video
+/// by the `[<id>]` token its imported audio filename carries (`%(title)s
+/// [%(id)s].ext`). Lets ytnt link to an already-imported recording instead of
+/// importing twice (imported in Phoneme directly, or after a lost link). `None`
+/// if none (or the list isn't reachable). `phoneme --json list` is JSON-lines.
+#[tauri::command]
+fn phoneme_find_recording(video_id: String) -> Option<String> {
+    let needle = format!("[{video_id}]");
+    let out = run_phoneme(&["--json", "list", "--limit", "10000"]).ok()?;
+    out.lines().find_map(|line| {
+        let r: RecRow = serde_json::from_str(line.trim()).ok()?;
+        (r.audio_path.contains(&needle)).then_some(r.id)
+    })
 }
 
 /// Parse JSON-lines output, logging (not silently dropping) any unparseable
@@ -666,71 +698,53 @@ async fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> 
 // in flight. Best-effort: phoneme-rest is opt-in + loopback-only, so this often
 // isn't reachable — the frontend keeps polling as a fallback when it is not.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+/// The running `phoneme watch` child of an active live-event bridge, if any. We
+/// kill it to stop forwarding (the blocking pipe read otherwise never returns).
+static WATCH_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
 
-/// Generation counter so a newer `phoneme_sse_start` cancels the previous bridge
-/// task (each task exits once the generation moves past the one it captured).
-static SSE_GEN: AtomicU64 = AtomicU64::new(0);
-
-/// Open the phoneme-rest SSE event stream and re-emit each `DaemonEvent` to the
-/// frontend as a Tauri `phoneme-event`. Returns once the stream is confirmed
-/// open (so the frontend can stop polling), then keeps forwarding in the
-/// background until the stream closes or a newer call supersedes it. `Err` when
-/// phoneme-rest isn't reachable — the caller then relies on polling.
+/// Start a live-event bridge: spawn `phoneme watch` (which tails the daemon's
+/// event stream as one JSON line per `DaemonEvent` over the always-on pipe — no
+/// opt-in REST, and cross-platform) and re-emit each line to the frontend as a
+/// Tauri `phoneme-event`. Supersedes any previous bridge. `Err` only if the
+/// watcher can't be spawned (CLI missing) — the caller then relies on polling.
 #[tauri::command]
-async fn phoneme_sse_start(app: AppHandle) -> Result<(), String> {
+fn phoneme_watch_start(app: AppHandle) -> Result<(), String> {
+    use std::io::BufRead;
     use tauri::Emitter;
-    let my_gen = SSE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    let resp = reqwest::Client::new()
-        .get(format!("{PHONEME_REST_BASE}/api/events"))
-        .header("Accept", "text/event-stream")
-        .send()
-        .await
-        .map_err(|e| format!("phoneme-rest events not reachable ({e})"))?;
-    if !resp.status().is_success() {
-        return Err(format!("phoneme-rest events returned {}", resp.status()));
-    }
-    // Stream is open. Forward in a background task; the await above already
-    // proved reachability, so the caller can stop its poll.
-    tauri::async_runtime::spawn(async move {
-        let mut resp = resp;
-        let mut buf = String::new();
-        loop {
-            // A newer start (or a stop) superseded this task.
-            if SSE_GEN.load(Ordering::SeqCst) != my_gen {
-                break;
+    phoneme_watch_stop();
+    let mut child = std::process::Command::new(resolve_phoneme())
+        .arg("watch")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't start `phoneme watch` ({e})"))?;
+    let stdout = child.stdout.take().ok_or("phoneme watch: no stdout")?;
+    *WATCH_CHILD.lock().unwrap() = Some(child);
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
             }
-            match resp.chunk().await {
-                Ok(Some(bytes)) => {
-                    buf.push_str(&String::from_utf8_lossy(&bytes));
-                    // SSE frames are separated by a blank line; each carries one
-                    // or more `data:` lines. We forward each `data:` payload.
-                    while let Some(pos) = buf.find('\n') {
-                        let line = buf[..pos].trim_end_matches('\r').to_string();
-                        buf.drain(..=pos);
-                        if let Some(data) = line.strip_prefix("data:") {
-                            let data = data.trim();
-                            if data.is_empty() {
-                                continue;
-                            }
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                                let _ = app.emit("phoneme-event", v);
-                            }
-                        }
-                    }
-                }
-                Ok(None) => break, // stream closed by the server
-                Err(_) => break,   // network error — frontend falls back to polling
-            }
+            let payload = serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|_| serde_json::json!({ "raw": line }));
+            let _ = app.emit("phoneme-event", payload);
         }
     });
     Ok(())
 }
 
-/// Stop forwarding SSE events (the in-flight bridge task exits on its next loop).
+/// Stop the live-event bridge — kill the `phoneme watch` child; its reader thread
+/// ends when stdout closes.
 #[tauri::command]
-fn phoneme_sse_stop() {
-    SSE_GEN.fetch_add(1, Ordering::SeqCst);
+fn phoneme_watch_stop() {
+    if let Ok(mut g) = WATCH_CHILD.lock() {
+        if let Some(mut child) = g.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// Best-effort standalone transcript: fetch YouTube's own caption track via the
@@ -1372,8 +1386,10 @@ pub fn run() {
             phoneme_search,
             phoneme_recording,
             phoneme_versions,
-            phoneme_sse_start,
-            phoneme_sse_stop,
+            phoneme_watch_start,
+            phoneme_watch_stop,
+            phoneme_daemon_start,
+            phoneme_find_recording,
             youtube_captions,
             import_youtube_playlist,
             google_status,

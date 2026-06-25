@@ -139,7 +139,7 @@ export class App extends LitElement {
   @state() private cmpLeft = 0;
   @state() private cmpRight = 0;
   private pollTimer = 0;
-  private sseOn = false;
+  private liveOn = false;
   private unlistenPhoneme: (() => void) | null = null;
   @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
   @state() private listOpen = localStorage.getItem("ytnt.list") !== "0";
@@ -202,7 +202,7 @@ export class App extends LitElement {
     window.removeEventListener("focusin", this.onFocusIn, true);
     clearInterval(this.probeTimer);
     this.unlistenPhoneme?.();
-    if (this.sseOn) { this.sseOn = false; api.phonemeSseStop().catch(() => {}); }
+    if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
   }
 
   /** Probe Phoneme's CLI/daemon/version; flips phonemeOk and the compat flags live. */
@@ -331,9 +331,9 @@ export class App extends LitElement {
     // Re-probe on a timer so a daemon that starts or dies mid-session flips
     // phonemeOk live (not only at startup).
     this.probeTimer = window.setInterval(() => this.probePhoneme(), 15000);
-    // Live pipeline progress: phoneme_sse_start bridges phoneme-rest's SSE to a
-    // "phoneme-event" Tauri event; refresh on each while a recording is tracked.
-    // Best-effort — REST is opt-in, so this no-ops and the 4s poll carries on.
+    // Live pipeline progress: phoneme_watch_start bridges `phoneme watch` (the
+    // always-on daemon event stream) to a "phoneme-event" Tauri event; refresh on
+    // each while a recording is tracked. The 4s poll stays as a fallback.
     listen("phoneme-event", () => { if (this.recId()) this.refreshPhoneme(); })
       .then((un) => (this.unlistenPhoneme = un)).catch(() => {});
     win()?.setDecorations(!this.settings.stripTitlebar)?.catch(() => {});
@@ -400,7 +400,7 @@ export class App extends LitElement {
     this.editing = null; this.filter = ""; this.dur = 0; this.lastSaved = 0; this.selectedId = null;
     this.view = "notes"; this.segments = [];
     this.phonemeRec = null; this.phonemeVersions = []; this.versionsError = ""; this.chapters = []; this.transcriptView = "transcript"; clearTimeout(this.pollTimer);
-    if (this.sseOn) { this.sseOn = false; api.phonemeSseStop().catch(() => {}); }
+    if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
     await api.upsertVideo(id, url ?? `https://youtu.be/${id}`);
     await this.refreshVideos();
     this.player?.load(id, this.current?.last_pos_secs ?? 0);
@@ -620,11 +620,31 @@ export class App extends LitElement {
     if (yes) await this.unlinkRef();
     else this.flash("Phoneme recording not found.", "err");
   }
+  /** Phoneme is installed but its daemon isn't answering — start it. */
+  private async startDaemon() {
+    this.flash("Starting Phoneme…");
+    try { await api.phonemeDaemonStart(); } catch (e) { this.flash(String(e), "err"); return; }
+    // It spawns detached; re-probe shortly for fast feedback (the 15s probe also catches it).
+    window.setTimeout(() => this.probePhoneme(), 1500);
+  }
   private async sendToPhoneme() {
     const v = this.current; if (!v) return;
-    this.transcriptBusy = true; this.flash("Sending to Phoneme — downloading + queuing…");
-    try { const rec = await api.phonemeImport(v.url, this.settings.phonemeRecipe || undefined); await this.setRecId(rec); await this.refreshPhoneme(); this.flash("Queued — transcribing in Phoneme", "ok"); }
-    catch (e) { this.flash(String(e), "err"); }
+    this.transcriptBusy = true;
+    try {
+      // Reconcile first: if Phoneme already has a recording for this video
+      // (imported there directly, or after a lost link), link to it rather than
+      // importing a second time. Best-effort — falls through to import on any error.
+      const existing = await api.phonemeFindRecording(v.id).catch(() => null);
+      if (existing) {
+        await this.setRecId(existing); await this.refreshPhoneme();
+        this.flash("Linked to an existing Phoneme recording", "ok");
+        return;
+      }
+      this.flash("Sending to Phoneme — downloading + queuing…");
+      const rec = await api.phonemeImport(v.url, this.settings.phonemeRecipe || undefined);
+      await this.setRecId(rec); await this.refreshPhoneme();
+      this.flash("Queued — transcribing in Phoneme", "ok");
+    } catch (e) { this.flash(String(e), "err"); }
     finally { this.transcriptBusy = false; }
   }
   private openTranscript() {
@@ -649,7 +669,7 @@ export class App extends LitElement {
     }
     if (/^(done|.*_failed|cancelled)$/.test(this.phonemeRec.status)) {
       clearTimeout(this.pollTimer);
-      if (this.sseOn) { this.sseOn = false; api.phonemeSseStop().catch(() => {}); }
+      if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
       try { this.segments = await api.phonemeSegments(rec); } catch { /* may have no timing */ }
       try {
         this.phonemeVersions = await api.phonemeVersions(rec);
@@ -658,8 +678,8 @@ export class App extends LitElement {
       } catch (e) { this.phonemeVersions = []; this.versionsError = String(e); }
       try { this.chapters = await api.phonemeChapters(rec); } catch { this.chapters = []; }
     } else {
-      // In flight: prefer live SSE updates; keep the 4s poll as the fallback.
-      if (!this.sseOn) { this.sseOn = true; api.phonemeSseStart().catch(() => { this.sseOn = false; }); }
+      // In flight: prefer live `phoneme watch` events; keep the 4s poll fallback.
+      if (!this.liveOn) { this.liveOn = true; api.phonemeWatchStart().catch(() => { this.liveOn = false; }); }
       clearTimeout(this.pollTimer);
       this.pollTimer = window.setTimeout(() => this.refreshPhoneme(), 4000);
     }
@@ -1397,6 +1417,9 @@ export class App extends LitElement {
                 </select>
               </label>` : nothing}
             </div>`
+          : nothing}
+        ${this.phonemePresent && !this.phonemeOk
+          ? html`<button class="primary" @click=${() => this.startDaemon()} ?disabled=${this.transcriptBusy}>Start Phoneme</button>`
           : nothing}
         <button @click=${() => this.loadCaptions()} ?disabled=${this.transcriptBusy}>Load YouTube captions</button>
         <div class="muted sm">${this.transcriptBusy ? "Working…"
