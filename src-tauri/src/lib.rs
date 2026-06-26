@@ -3,7 +3,7 @@
 
 mod db;
 
-use db::{Backup, Db, Note, PlaylistItem, PlaylistRef, SearchHit, VideoWithCount};
+use db::{Backup, Db, ImportStats, Note, PlaylistItem, PlaylistRef, SearchHit, VideoWithCount};
 use std::io::Write;
 use std::net::TcpListener;
 use std::time::Duration;
@@ -106,7 +106,7 @@ async fn export_json(db: State<'_, Db>) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn import_json(db: State<'_, Db>, json: String) -> Result<(), String> {
+async fn import_json(db: State<'_, Db>, json: String) -> Result<ImportStats, String> {
     let backup: Backup = serde_json::from_str(&json).map_err(err)?;
     db.import(backup).await.map_err(err)
 }
@@ -1401,12 +1401,20 @@ pub fn run() {
                     .filename(&dbfile)
                     .create_if_missing(true)
                     .foreign_keys(true)
-                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .busy_timeout(Duration::from_secs(5));
                 let pool = sqlx::sqlite::SqlitePoolOptions::new()
                     .max_connections(5)
                     .connect_with(opts)
                     .await?;
                 sqlx::migrate!("./migrations").run(&pool).await?;
+                // Catch corruption at boot rather than at the first failing query.
+                let row: (String,) = sqlx::query_as("PRAGMA quick_check")
+                    .fetch_one(&pool)
+                    .await?;
+                if row.0 != "ok" {
+                    return Err(sqlx::Error::Protocol(format!("Database integrity check failed: {}", row.0)));
+                }
                 Ok::<Db, sqlx::Error>(Db { pool })
             })
             .expect("initialize database");

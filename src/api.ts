@@ -27,6 +27,7 @@ export interface PhonemeRecipe { id: string; name: string; description: string; 
 export interface GPlaylist { id: string; title: string; count: number; }
 export interface PlaylistItem { video_id: string; item_id: string; title: string; position: number; in_library: boolean; }
 export interface PlaylistRef { playlist_id: string; playlist_title: string; item_id: string; }
+export interface ImportStats { added_videos: number; skipped_videos: number; added_notes: number; skipped_notes: number; }
 
 // Tauri maps camelCase JS keys to snake_case Rust params automatically.
 export const api = {
@@ -48,7 +49,7 @@ export const api = {
   resetOrder: (videoId: string) => invoke<void>("reset_order", { videoId }),
   searchNotes: (query: string) => invoke<SearchHit[]>("search_notes", { query }),
   exportJson: () => invoke<string>("export_json"),
-  importJson: (json: string) => invoke<void>("import_json", { json }),
+  importJson: (json: string) => invoke<ImportStats>("import_json", { json }),
   saveMarkdown: (dir: string, name: string, content: string) =>
     invoke<string>("save_markdown", { dir, name, content }),
   phonemeProbe: () => invoke<PhonemeProbe>("phoneme_probe"),

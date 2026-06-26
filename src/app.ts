@@ -682,13 +682,32 @@ export class App extends LitElement {
     await this.loadVideo(h.video_id, undefined, h.t_secs);
   }
 
-  private async exportJson() { download("ytnt-backup.json", await api.exportJson(), "application/json"); this.flash("Exported backup", "ok"); }
+  private async exportJson() {
+    const dbJson = await api.exportJson();
+    const data = JSON.parse(dbJson);
+    // Include localStorage settings so a full backup survives a machine transfer.
+    try { data.settings = JSON.parse(localStorage.getItem("ytnt.settings") ?? "{}"); } catch { /**/ }
+    try { data.tagColors = JSON.parse(localStorage.getItem("ytnt.tagColors") ?? "{}"); } catch { /**/ }
+    download("ytnt-backup.json", JSON.stringify(data, null, 2), "application/json");
+    this.flash("Exported backup", "ok");
+  }
   private async importJson(e: Event) {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
-    await api.importJson(await file.text());
+    const raw = await file.text();
+    // Restore settings/tagColors if the backup includes them (round-trip safe).
+    try {
+      const data = JSON.parse(raw);
+      if (data.settings && typeof data.settings === "object") localStorage.setItem("ytnt.settings", JSON.stringify(data.settings));
+      if (data.tagColors && typeof data.tagColors === "object") localStorage.setItem("ytnt.tagColors", JSON.stringify(data.tagColors));
+    } catch { /**/ }
+    const stats = await api.importJson(raw);
     await this.refreshVideos(); await this.refreshNotes();
-    this.flash("Imported backup", "ok");
+    const skipped = stats.skipped_videos + stats.skipped_notes;
+    const msg = skipped > 0
+      ? `Imported ${stats.added_videos} video${stats.added_videos !== 1 ? "s" : ""}, ${stats.added_notes} note${stats.added_notes !== 1 ? "s" : ""} — ${skipped} already existed`
+      : `Imported ${stats.added_videos} video${stats.added_videos !== 1 ? "s" : ""}, ${stats.added_notes} note${stats.added_notes !== 1 ? "s" : ""}`;
+    this.flash(msg, "ok");
   }
 
   private mdForCurrent(): string | null {
@@ -946,6 +965,7 @@ export class App extends LitElement {
   }
   // ── Spatial hjkl grid over the sidebar / detail pane (the list uses kbdIndex). ──
   // Interactive elements reachable via spatial nav (hjkl); update deliberately when adding nav-reachable elements.
+  // Elements reachable via spatial nav (hjkl/arrows). Update deliberately when adding nav-reachable controls.
   private GRID_SEL = "#playerWrap,button:not([disabled]),summary,input:not([type='hidden']):not([disabled]),.np-title,.tag-chip-body";
   private PANE_ORDER: Array<"sidebar" | "list" | "detail"> = ["sidebar", "list", "detail"];
   private gridCells(pane: "sidebar" | "detail"): HTMLElement[] {

@@ -41,7 +41,7 @@ pub struct Video {
     pub ext_ref: Option<String>,
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct Note {
     pub id: String,
     pub video_id: String,
@@ -75,19 +75,18 @@ pub struct PlaylistRef {
     pub item_id: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, FromRow)]
-pub struct BackupNote {
-    pub id: String,
-    pub video_id: String,
-    pub t_secs: f64,
-    pub content: String,
-    pub order_index: i64,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Backup {
     pub videos: Vec<Video>,
-    pub notes: Vec<BackupNote>,
+    pub notes: Vec<Note>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportStats {
+    pub added_videos: usize,
+    pub skipped_videos: usize,
+    pub added_notes: usize,
+    pub skipped_notes: usize,
 }
 
 impl Db {
@@ -345,7 +344,7 @@ impl Db {
         )
         .fetch_all(&self.pool)
         .await?;
-        let notes = sqlx::query_as::<_, BackupNote>(
+        let notes = sqlx::query_as::<_, Note>(
             "SELECT id, video_id, t_secs, content, order_index FROM notes",
         )
         .fetch_all(&self.pool)
@@ -353,10 +352,12 @@ impl Db {
         Ok(Backup { videos, notes })
     }
 
-    pub async fn import(&self, backup: Backup) -> Result<(), sqlx::Error> {
+    pub async fn import(&self, backup: Backup) -> Result<ImportStats, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        let mut added_videos = 0usize;
+        let mut skipped_videos = 0usize;
         for v in &backup.videos {
-            sqlx::query(
+            let res = sqlx::query(
                 "INSERT OR IGNORE INTO videos (id, title, channel, url, duration, last_pos_secs, manual_order, tags, ext_ref)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
@@ -371,9 +372,12 @@ impl Db {
             .bind(v.ext_ref.as_deref())
             .execute(&mut *tx)
             .await?;
+            if res.rows_affected() > 0 { added_videos += 1; } else { skipped_videos += 1; }
         }
+        let mut added_notes = 0usize;
+        let mut skipped_notes = 0usize;
         for n in &backup.notes {
-            sqlx::query(
+            let res = sqlx::query(
                 "INSERT OR IGNORE INTO notes (id, video_id, t_secs, content, order_index)
                  VALUES (?, ?, ?, ?, ?)",
             )
@@ -384,8 +388,10 @@ impl Db {
             .bind(n.order_index)
             .execute(&mut *tx)
             .await?;
+            if res.rows_affected() > 0 { added_notes += 1; } else { skipped_notes += 1; }
         }
-        tx.commit().await
+        tx.commit().await?;
+        Ok(ImportStats { added_videos, skipped_videos, added_notes, skipped_notes })
     }
 }
 
@@ -427,7 +433,11 @@ mod tests {
 
         // import into a fresh db
         let dst = test_db().await;
-        dst.import(backup).await.unwrap();
+        let stats = dst.import(backup).await.unwrap();
+        assert_eq!(stats.added_videos, 1);
+        assert_eq!(stats.added_notes, 2);
+        assert_eq!(stats.skipped_videos, 0);
+        assert_eq!(stats.skipped_notes, 0);
 
         let videos = dst.list_videos().await.unwrap();
         assert_eq!(videos.len(), 1);
@@ -454,7 +464,7 @@ mod tests {
         // Build a backup with a note referencing a video that is NOT in the backup.
         let backup = Backup {
             videos: vec![],
-            notes: vec![BackupNote {
+            notes: vec![Note {
                 id: "note-orphan".into(),
                 video_id: "no-such-video".into(),
                 t_secs: 0.0,

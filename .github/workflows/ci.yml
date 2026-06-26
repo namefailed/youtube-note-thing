@@ -18,6 +18,7 @@ jobs:
       - run: npm run type-check
       - run: npm test
       - run: npm run build
+      - run: npm audit --audit-level high
 
   rust:
     runs-on: windows-latest
@@ -36,6 +37,14 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   docs:
     name: Rustdoc

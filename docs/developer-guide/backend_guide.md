@@ -86,8 +86,7 @@ REST (`127.0.0.1:3737`) → the Windows daemon named pipe. See
 
 | Command | Args | Returns | Does |
 | :--- | :--- | :--- | :--- |
-| `phoneme_available` | — | `bool` | CLI present *and* daemon answers a `list`. |
-| `phoneme_probe` | — | `PhonemeProbe` | Richer probe: `present` (CLI), `daemon_ok`, reported `version`, and `compatible` (≥ `MIN_PHONEME_VERSION` = 1.8). Polled so a daemon dying/starting mid-session shows live. |
+| `phoneme_probe` | — | `PhonemeProbe` | Probe: `present` (CLI), `daemon_ok`, reported `version`, and `compatible` (≥ `MIN_PHONEME_VERSION` = 1.8). Polled so a daemon dying/starting mid-session shows live. |
 | `phoneme_tags` | — | `Vec<PhonemeTag>` | Phoneme's whole tag vocabulary with colors (so ytnt paints chips the same color). Empty when unavailable. |
 | `phoneme_tags_for` | `rec_id` | `Result<Vec<PhonemeTag>>` | Tags on one recording — the *pull* side of membership sync. Returns `Err` (not empty) when unreachable, so the UI never mistakes "down" for "no tags". |
 | `phoneme_apply_tags` | `rec_id`, `add`, `remove`, `colors` | `()` | The *push* side: create-if-missing (with color), then attach/detach by name. |
