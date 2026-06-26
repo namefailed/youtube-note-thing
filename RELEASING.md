@@ -28,6 +28,16 @@ which builds the Windows installer, signs the **updater** artifacts, and drafts 
    ```
 3. The workflow drafts a release. Review and publish it; the updater then sees `latest.json`.
 
+## Before a repo rename or transfer
+
+`src-tauri/tauri.conf.json` `plugins.updater.endpoints` contains a hardcoded
+GitHub URL (owner/repo). If the repository is renamed or transferred to a
+different owner, **update this URL before tagging the next release** — existing
+installed clients will keep polling the old endpoint and receive no updates.
+The public key (`plugins.updater.pubkey`) is baked into distributed binaries
+and cannot be changed without forcing a manual reinstall, so do not regenerate
+it unless the private key is compromised.
+
 ## Code signing (optional, recommended for distribution)
 
 The updater signature (above) lets the app verify updates, but it is **not** OS code signing — Windows

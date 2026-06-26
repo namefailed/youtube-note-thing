@@ -4,12 +4,24 @@
 mod db;
 
 use db::{Backup, Db, Note, PlaylistItem, PlaylistRef, SearchHit, VideoWithCount};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpListener;
+use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
+}
+
+/// Shared HTTP client constructor — 30-second timeout applied to all outbound
+/// requests. Construct fresh per command (connection pooling is not needed at
+/// this call frequency); `phoneme_import` audio downloads get their own client
+/// with no timeout since download duration is unbounded.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap()
 }
 
 #[tauri::command]
@@ -103,6 +115,9 @@ async fn import_json(db: State<'_, Db>, json: String) -> Result<(), String> {
 /// supplied by the user in settings; we just validate it's an existing directory.
 #[tauri::command]
 fn save_markdown(dir: String, name: String, content: String) -> Result<String, String> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("filename must not contain path components".into());
+    }
     let d = std::path::Path::new(&dir);
     if !d.is_dir() {
         return Err(format!("Folder not found: {dir}"));
@@ -111,6 +126,11 @@ fn save_markdown(dir: String, name: String, content: String) -> Result<String, S
     std::fs::write(&path, content).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
 }
+
+// Public WEB InnerTube API key — hardcoded intentionally. This is a
+// well-known public key embedded in every YouTube web client. It conveys no
+// user identity or privilege and is safe to commit per YouTube's own usage.
+const INNERTUBE_API_KEY: &str = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 
 // ── Optional Phoneme integration (via its CLI, which talks to the daemon) ─────
 // All best-effort: if the `phoneme` CLI isn't on PATH / the daemon is down, these
@@ -170,15 +190,9 @@ fn resolve_phoneme() -> String {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
     if !home.is_empty() {
-        for rel in [
-            format!(".cargo/bin/{exe}"),
-            format!("Projects/dev/phoneme/target/release/{exe}"),
-            format!("Projects/dev/phoneme/target/debug/{exe}"),
-        ] {
-            let cand = std::path::Path::new(&home).join(rel);
-            if cand.exists() {
-                return cand.to_string_lossy().into_owned();
-            }
+        let cand = std::path::Path::new(&home).join(format!(".cargo/bin/{exe}"));
+        if cand.exists() {
+            return cand.to_string_lossy().into_owned();
         }
     }
     "phoneme".to_string()
@@ -276,16 +290,6 @@ fn phoneme_daemon_start() -> Result<(), String> {
     run_phoneme(&["daemon", "start"]).map(|_| ())
 }
 
-/// Is the Phoneme CLI present and its daemon reachable?
-#[tauri::command]
-fn phoneme_available() -> bool {
-    std::process::Command::new(resolve_phoneme())
-        .args(["--json", "list", "--limit", "1"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// The lowest Phoneme version whose `--json` / CLI contract ytnt was built
 /// against (e.g. `chapters --show`, `show --segments`). Older daemons get a
 /// loud "update Phoneme" notice instead of silently-blank panels.
@@ -314,14 +318,15 @@ struct PhonemeProbe {
     path: String,
 }
 
-/// A richer Phoneme probe than [`phoneme_available`]: distinguishes "CLI present"
+/// A richer Phoneme probe: distinguishes "CLI present"
 /// (version prints — no daemon needed) from "daemon reachable" (a `list`
 /// succeeds), and flags a too-old CLI. The frontend polls this so a daemon that
 /// dies (or starts) mid-session is reflected live, and an incompatible install
 /// degrades loudly instead of showing blank panels.
 #[tauri::command]
 fn phoneme_probe() -> PhonemeProbe {
-    let version_out = std::process::Command::new(resolve_phoneme())
+    let phoneme = resolve_phoneme();
+    let version_out = std::process::Command::new(&phoneme)
         .arg("version")
         .output();
     let (present, version) = match &version_out {
@@ -340,8 +345,12 @@ fn phoneme_probe() -> PhonemeProbe {
     let compatible = parse_phoneme_version(&version)
         .map(|v| v >= MIN_PHONEME_VERSION)
         .unwrap_or(true);
-    let daemon_ok = present && phoneme_available();
-    PhonemeProbe { present, daemon_ok, version, compatible, path: resolve_phoneme() }
+    let daemon_ok = present && std::process::Command::new(&phoneme)
+        .args(["--json", "list", "--limit", "1"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    PhonemeProbe { present, daemon_ok, version, compatible, path: phoneme }
 }
 
 /// Hand a YouTube URL to Phoneme (downloads audio + queues transcription).
@@ -349,7 +358,9 @@ fn phoneme_probe() -> PhonemeProbe {
 /// new recording id.
 #[tauri::command]
 async fn phoneme_import(url: String, recipe: Option<String>) -> Result<String, String> {
-    let out = tauri::async_runtime::spawn_blocking(move || {
+    #[derive(serde::Deserialize)]
+    struct ImportResult { id: String }
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let recipe = recipe.unwrap_or_default();
         let recipe = recipe.trim();
         let mut args: Vec<&str> = vec!["import", &url];
@@ -358,15 +369,14 @@ async fn phoneme_import(url: String, recipe: Option<String>) -> Result<String, S
             args.push("--recipe");
             args.push(recipe);
         }
-        run_phoneme(&args)
+        run_phoneme_json::<ImportResult>(&args)
     })
     .await
     .map_err(|e| e.to_string())??;
-    let id = out.split_whitespace().last().unwrap_or("").to_string();
-    if id.is_empty() {
+    if result.id.is_empty() {
         return Err("Phoneme returned no recording id".into());
     }
-    Ok(id)
+    Ok(result.id)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -402,13 +412,18 @@ struct RecRow {
 /// importing twice (imported in Phoneme directly, or after a lost link). `None`
 /// if none (or the list isn't reachable). `phoneme --json list` is JSON-lines.
 #[tauri::command]
-fn phoneme_find_recording(video_id: String) -> Option<String> {
-    let needle = format!("[{video_id}]");
-    let out = run_phoneme(&["--json", "list", "--limit", "10000"]).ok()?;
-    out.lines().find_map(|line| {
-        let r: RecRow = serde_json::from_str(line.trim()).ok()?;
-        (r.audio_path.contains(&needle)).then_some(r.id)
+async fn phoneme_find_recording(video_id: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let needle = format!("[{video_id}]");
+        let out = run_phoneme(&["--json", "list", "--limit", "10000"]).ok()?;
+        out.lines().find_map(|line| {
+            let r: RecRow = serde_json::from_str(line.trim()).ok()?;
+            (r.audio_path.contains(&needle)).then_some(r.id)
+        })
     })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Parse JSON-lines output, logging (not silently dropping) any unparseable
@@ -475,39 +490,29 @@ fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
         return Ok(vec![]);
     }
     let out = run_phoneme(&["--json", "search", &query, "--limit", "10"])?;
-    let mut hits = Vec::new();
-    let mut seen = 0usize;
-    let mut parse_failed = 0usize;
-    for line in out.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        seen += 1;
-        let v = match serde_json::from_str::<serde_json::Value>(line) {
-            Ok(v) => v,
-            Err(e) => { eprintln!("phoneme search: skipping unparseable line: {e}"); parse_failed += 1; continue }
-        };
-        let rec = v.get("recording").unwrap_or(&v);
-        let id = rec.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-        if id.is_empty() {
-            continue;
-        }
-        let title = rec.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-        let snippet: String = rec
-            .get("summary")
-            .and_then(|x| x.as_str())
-            .or_else(|| rec.get("transcript").and_then(|x| x.as_str()))
-            .unwrap_or_default()
-            .chars()
-            .take(140)
-            .collect();
-        hits.push(PhonemeHit { id, title, snippet });
-    }
-    // Every line failed to even parse as JSON → the contract drifted; surface it.
-    if seen > 0 && parse_failed == seen {
-        return Err("Couldn't read Phoneme's search output — it may be a different version than expected.".into());
-    }
+    // parse_json_lines errors when there IS output but nothing parsed (contract drift).
+    let rows = parse_json_lines::<serde_json::Value>(&out, "search")?;
+    let hits = rows
+        .into_iter()
+        .filter_map(|v| {
+            // Phoneme may wrap the hit in a `recording` field or return it flat.
+            let rec = v.get("recording").cloned().unwrap_or(v);
+            let id = rec.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let title = rec.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            let snippet: String = rec
+                .get("summary")
+                .and_then(|x| x.as_str())
+                .or_else(|| rec.get("transcript").and_then(|x| x.as_str()))
+                .unwrap_or_default()
+                .chars()
+                .take(140)
+                .collect();
+            Some(PhonemeHit { id, title, snippet })
+        })
+        .collect();
     Ok(hits)
 }
 
@@ -634,7 +639,7 @@ const PHONEME_REST_BASE: &str = "http://127.0.0.1:3737";
 /// Best-effort GET against phoneme-rest, parsed as JSON. `Err` when REST is off /
 /// unreachable / non-2xx — callers fall back to the pipe or degrade.
 async fn phoneme_rest_get(path: &str) -> Result<serde_json::Value, String> {
-    let resp = reqwest::Client::new()
+    let resp = http_client()
         .get(format!("{PHONEME_REST_BASE}{path}"))
         .send()
         .await
@@ -758,15 +763,15 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
     let want = lang.unwrap_or_else(|| "en".into());
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0")
+        .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
-    let key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"; // public WEB InnerTube key
     let body = serde_json::json!({
         "context": { "client": { "clientName": "WEB", "clientVersion": "2.20240101.00.00" } },
         "videoId": video_id,
     });
     let player: serde_json::Value = client
-        .post(format!("https://www.youtube.com/youtubei/v1/player?key={key}"))
+        .post(format!("https://www.youtube.com/youtubei/v1/player?key={INNERTUBE_API_KEY}"))
         .json(&body)
         .send()
         .await
@@ -791,6 +796,15 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
         .get("baseUrl")
         .and_then(|x| x.as_str())
         .ok_or("Caption track has no URL")?;
+    // Validate the URL before following it — the `url` crate is already a
+    // transitive reqwest dependency, so no new import is needed.
+    {
+        let parsed = url::Url::parse(base).map_err(|e| format!("Bad caption URL: {e}"))?;
+        let host = parsed.host_str().unwrap_or("");
+        if parsed.scheme() != "https" || (!host.ends_with("youtube.com") && !host.ends_with("googlevideo.com")) {
+            return Err(format!("Caption URL has unexpected host/scheme: {base}"));
+        }
+    }
     let cap: serde_json::Value = client
         .get(format!("{base}&fmt=json3"))
         .send()
@@ -861,15 +875,15 @@ fn collect_playlist_videos(v: &serde_json::Value, out: &mut Vec<(String, String)
 async fn import_youtube_playlist(db: State<'_, Db>, playlist_id: String) -> Result<usize, String> {
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0")
+        .timeout(Duration::from_secs(30))
         .build()
         .map_err(err)?;
-    let key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"; // public WEB InnerTube key
     let body = serde_json::json!({
         "context": { "client": { "clientName": "WEB", "clientVersion": "2.20240101.00.00" } },
         "browseId": format!("VL{playlist_id}"),
     });
     let v: serde_json::Value = client
-        .post(format!("https://www.youtube.com/youtubei/v1/browse?key={key}"))
+        .post(format!("https://www.youtube.com/youtubei/v1/browse?key={INNERTUBE_API_KEY}"))
         .json(&body)
         .send()
         .await
@@ -932,15 +946,16 @@ fn now_secs() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
-fn tokens_path(app: &AppHandle) -> std::path::PathBuf {
-    let dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    dir.join("google_tokens.json")
+fn tokens_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
+    Ok(dir.join("google_tokens.json"))
 }
 fn load_tokens(app: &AppHandle) -> Option<GoogleTokens> {
-    std::fs::read_to_string(tokens_path(app)).ok().and_then(|s| serde_json::from_str(&s).ok())
+    let p = tokens_path(app).ok()?;
+    std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
 }
 fn save_tokens(app: &AppHandle, t: &GoogleTokens) -> Result<(), String> {
-    let p = tokens_path(app);
+    let p = tokens_path(app)?;
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).ok();
     }
@@ -949,11 +964,26 @@ fn save_tokens(app: &AppHandle, t: &GoogleTokens) -> Result<(), String> {
 
 /// Block until the OAuth redirect hits our loopback listener, then return the code.
 fn wait_for_code(listener: TcpListener) -> Result<String, String> {
+    use std::io::BufRead as _;
     let (mut stream, _) = listener.accept().map_err(err)?;
-    let mut buf = [0u8; 4096];
-    let n = stream.read(&mut buf).map_err(err)?;
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let path = req.lines().next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("");
+    stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(err)?;
+    // Read lines until the blank header boundary (handles TCP fragmentation).
+    // Scope the BufReader so it drops before the write below.
+    let first_line = {
+        let mut reader = std::io::BufReader::new(&stream);
+        let mut first_line = String::new();
+        reader.read_line(&mut first_line).map_err(err)?;
+        // Drain remaining headers.
+        loop {
+            let mut hdr = String::new();
+            reader.read_line(&mut hdr).map_err(err)?;
+            if hdr == "\r\n" || hdr.is_empty() {
+                break;
+            }
+        }
+        first_line
+    };
+    let path = first_line.split_whitespace().nth(1).unwrap_or("");
     let body = "<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;background:#11111b;color:#cdd6f4;text-align:center;padding-top:64px\"><h2 style=\"color:#a6e3a1\">Connected \u{2713}</h2><p>You can close this tab and return to youtube-note-thing.</p>";
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -970,7 +1000,7 @@ fn wait_for_code(listener: TcpListener) -> Result<String, String> {
 }
 
 async fn exchange_code(cid: &str, secret: &str, code: &str, redirect: &str) -> Result<GoogleTokens, String> {
-    let res: serde_json::Value = reqwest::Client::new()
+    let res: serde_json::Value = http_client()
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("code", code),
@@ -1003,7 +1033,7 @@ async fn valid_access_token(app: &AppHandle, cid: &str, secret: &str) -> Result<
         return Err("Session expired — reconnect your Google account".into());
     }
     let (cid, secret) = resolve_creds(cid.to_string(), secret.to_string())?;
-    let res: serde_json::Value = reqwest::Client::new()
+    let res: serde_json::Value = http_client()
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("client_id", cid.as_str()),
@@ -1040,7 +1070,7 @@ fn google_has_default() -> bool {
 
 #[tauri::command]
 fn google_logout(app: AppHandle) -> Result<(), String> {
-    let p = tokens_path(&app);
+    let p = tokens_path(&app)?;
     if p.exists() {
         std::fs::remove_file(p).map_err(err)?;
     }
@@ -1087,6 +1117,8 @@ fn parse_iso8601_duration(s: &str) -> Option<i64> {
             num.clear();
             if c == 'D' {
                 secs += n * 86_400;
+            } else if c == 'W' {
+                secs += n * 604_800;
             }
         }
     }
@@ -1123,7 +1155,7 @@ async fn sync_video_meta(
         return Ok(());
     }
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     for chunk in ids.chunks(50) {
         let id_param = chunk.join(",");
         let res: serde_json::Value = client
@@ -1139,6 +1171,9 @@ async fn sync_video_meta(
         let Some(items) = res.get("items").and_then(|x| x.as_array()) else {
             continue;
         };
+        // Wrap all UPDATEs for this chunk in one transaction — matches the
+        // pattern used by import_playlist and sync_playlist in db.rs.
+        let mut tx = db.pool.begin().await.map_err(err)?;
         for it in items {
             let Some(id) = it.get("id").and_then(|x| x.as_str()) else {
                 continue;
@@ -1154,10 +1189,26 @@ async fn sync_video_meta(
                 .pointer("/contentDetails/duration")
                 .and_then(|x| x.as_str())
                 .and_then(parse_iso8601_duration);
-            db.set_video_meta(id, title, channel, duration, views, published)
-                .await
-                .map_err(err)?;
+            sqlx::query(
+                "UPDATE videos SET
+                    title        = COALESCE(NULLIF(?, ''), title),
+                    channel      = COALESCE(?, channel),
+                    duration     = COALESCE(?, duration),
+                    view_count   = COALESCE(?, view_count),
+                    published_at = COALESCE(?, published_at)
+                 WHERE id = ?",
+            )
+            .bind(title)
+            .bind(channel)
+            .bind(duration)
+            .bind(views)
+            .bind(published)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
         }
+        tx.commit().await.map_err(err)?;
     }
     Ok(())
 }
@@ -1165,7 +1216,7 @@ async fn sync_video_meta(
 #[tauri::command]
 async fn google_playlists(app: AppHandle, client_id: String, client_secret: String) -> Result<Vec<GPlaylist>, String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let res: serde_json::Value = reqwest::Client::new()
+    let res: serde_json::Value = http_client()
         .get("https://www.googleapis.com/youtube/v3/playlists")
         .query(&[("part", "snippet,contentDetails"), ("mine", "true"), ("maxResults", "50")])
         .bearer_auth(&token)
@@ -1203,7 +1254,7 @@ async fn import_google_playlist(
     playlist_id: String,
 ) -> Result<usize, String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut vids: Vec<(String, String)> = Vec::new();
     let mut page = String::new();
     loop {
@@ -1254,7 +1305,7 @@ async fn google_sync_playlist(
     playlist_title: String,
 ) -> Result<Vec<PlaylistItem>, String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut items: Vec<(String, String, String, i64)> = Vec::new();
     let mut page = String::new();
     loop {
@@ -1308,7 +1359,7 @@ async fn google_remove_playlist_item(
     item_id: String,
 ) -> Result<(), String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let res = reqwest::Client::new()
+    let res = http_client()
         .delete("https://www.googleapis.com/youtube/v3/playlistItems")
         .query(&[("id", item_id.as_str())])
         .bearer_auth(&token)
@@ -1381,7 +1432,6 @@ pub fn run() {
             export_json,
             import_json,
             save_markdown,
-            phoneme_available,
             phoneme_probe,
             phoneme_tags,
             phoneme_tags_for,
@@ -1427,6 +1477,7 @@ mod tests {
         assert_eq!(parse_iso8601_duration("PT45S"), Some(45));
         assert_eq!(parse_iso8601_duration("P1DT2H"), Some(93_600));
         assert_eq!(parse_iso8601_duration("PT0S"), Some(0));
+        assert_eq!(parse_iso8601_duration("P1W"), Some(604_800));
         assert_eq!(parse_iso8601_duration("garbage"), None);
     }
 

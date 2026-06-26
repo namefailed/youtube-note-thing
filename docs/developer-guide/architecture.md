@@ -109,8 +109,8 @@ Phoneme is a sibling local transcription app. ytnt links a video to a Phoneme re
 
 The backend locates the binary with **`resolve_phoneme()`** in `lib.rs`, in priority order: the Settings/`set_phoneme_bin` override → the `PHONEME_BIN` env var → `PATH` → a `cargo install` → the usual local dev build. It is **CLI-first with fallbacks**:
 
-- **CLI** (`run_phoneme`) backs almost everything: probe/version, import, segments, chapters, search, tag list/attach/detach.
-- **REST** (`phoneme-rest`, loopback `127.0.0.1:3737`, opt-in) provides live SSE pipeline progress (`phoneme_sse_start` bridges it to a Tauri `phoneme-event`) and is one source for transcript versions.
+- **CLI** (`run_phoneme`) backs almost everything: probe/version, import, segments, chapters, search, tag list/attach/detach. Live pipeline progress uses `phoneme_watch_start` (spawns `phoneme watch`, pipes its stdout JSON lines as Tauri `phoneme-event`) and `phoneme_watch_stop` (kills the child), backed by `WATCH_CHILD: Mutex<Option<Child>>`.
+- **REST** (`phoneme-rest`, loopback `127.0.0.1:3737`, opt-in) is one source for transcript versions.
 - **Daemon named pipe** (Windows-only) is the last-resort source for transcript versions.
 
 **Invariants:**
@@ -193,6 +193,9 @@ Not everything is in the database. App settings live in the browser's `localStor
 | `hiddenPlaylists` | Playlists hidden from the sidebar |
 | `phonemeBin` | Explicit path to the Phoneme CLI (pushed to `set_phoneme_bin`) |
 | `syncTags` | Enable bidirectional tag-membership sync with Phoneme |
+| `vimNav` | Enable hjkl spatial keyboard navigation (default `false`) |
+| `arrowNav` | Enable arrow-key navigation between panes (default `false`) |
+| `phonemeRecipe` | Last-selected Phoneme pipeline recipe id (default `""`) |
 
 Two more `localStorage` keys back the tag system: `ytnt.tagColors` (local color overrides that win over Phoneme's) and `ytnt.tagSyncBase` (the per-video base snapshot for the 3-way merge). The full settings reference for users is [settings_reference.md](../user-guide/settings_reference.md).
 

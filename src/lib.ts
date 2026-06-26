@@ -36,7 +36,8 @@ export function safeTagColor(color: string | null | undefined, fallback = "var(-
  *  `""` for non-hex input (caller inherits). Mirrors Phoneme's contrast helper. */
 export function tagInk(hex: string): string {
   if (!hex || !hex.startsWith("#")) return "";
-  const h = hex.replace("#", "");
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
   const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
   if (isNaN(r) || isNaN(g) || isNaN(b)) return "";
   return (r * 299 + g * 587 + b * 114) / 1000 >= 128 ? "#11111b" : "#ffffff";

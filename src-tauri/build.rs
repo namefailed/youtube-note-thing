@@ -26,6 +26,9 @@ fn embed_google_creds() {
         }
     }
 
+    // Desktop-app OAuth client secrets are non-confidential per RFC 8252 §8.9 —
+    // Google treats installed-app secrets this way. Rotate the secret before each
+    // release to limit exposure from previously shipped binaries.
     for k in keys {
         // Process env (e.g. CI secrets) wins over the local .env file.
         let v = std::env::var(k)

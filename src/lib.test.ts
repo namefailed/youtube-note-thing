@@ -16,6 +16,8 @@ describe("tag colors", () => {
     expect(tagInk("#ffffff")).toBe("#11111b");
     expect(tagInk("#000000")).toBe("#ffffff");
     expect(tagInk("#cba6f7")).toBe("#11111b"); // mauve is light
+    expect(tagInk("#fff")).toBe("#11111b");
+    expect(tagInk("#abc")).not.toBe("");
     expect(tagInk("notahex")).toBe("");
   });
 });

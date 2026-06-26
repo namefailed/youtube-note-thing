@@ -1,6 +1,6 @@
 # 🎙️ Phoneme integration
 
-[Phoneme](https://github.com/) is a separate local transcription app. When it's installed and running alongside youtube-note-thing, you can hand a video to it, get back a real transcript with timestamps, compare the pipeline's cleanup steps side by side, read its summary and chapters, and keep your tags in sync — all without leaving ytnt. It's completely **optional**: ytnt is a full notes app on its own, and everything below simply switches off (gracefully) when Phoneme isn't there.
+Phoneme is a separate local transcription app. When it's installed and running alongside youtube-note-thing, you can hand a video to it, get back a real transcript with timestamps, compare the pipeline's cleanup steps side by side, read its summary and chapters, and keep your tags in sync — all without leaving ytnt. It's completely **optional**: ytnt is a full notes app on its own, and everything below simply switches off (gracefully) when Phoneme isn't there.
 
 This page covers how ytnt finds Phoneme, the health indicator, sending a video to transcribe, reading the result, [tag sync](#-tag-sync), and the [CLI path setting](#-the-phoneme-cli-path-setting). If you only want notes and playlists, you can skip the whole thing.
 

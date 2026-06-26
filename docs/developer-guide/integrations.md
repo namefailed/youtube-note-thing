@@ -2,7 +2,7 @@
 
 ytnt is **local-first and self-contained** — it stores videos and timestamped notes in its own SQLite database and needs nothing else to work. Two integrations are **optional** and bolt on extra capability:
 
-- **[Phoneme](https://github.com/)** — a sibling local transcription app. ytnt sends it YouTube URLs to transcribe, reads back transcripts / summaries / chapters, and keeps tag membership in sync. **Phoneme is the authority for the tag catalog;** ytnt mirrors it.
+- **Phoneme** — a sibling local transcription app. ytnt sends it YouTube URLs to transcribe, reads back transcripts / summaries / chapters, and keeps tag membership in sync. **Phoneme is the authority for the tag catalog;** ytnt mirrors it.
 - **Google / YouTube** — an OAuth account link so you can browse your real playlists, toggle videos in and out of your library, remove an entry from a playlist, and pull view-count / duration / channel metadata.
 
 Both degrade gracefully: if Phoneme isn't installed or Google isn't connected, those panels just disappear and the rest of the app is unaffected. **Neither is bundled or required.**
@@ -59,7 +59,8 @@ Phoneme exposes three transports. ytnt prefers the one that needs the least setu
 | Transport | Used by | Why |
 |-----------|---------|-----|
 | **CLI** (`std::process::Command`) | Almost everything — `import`, `show`, `chapters`, `search`, `tag *`, `versions` | Always available, cross-platform, no opt-in. The default path. |
-| **phoneme-rest** (`reqwest`, `http://127.0.0.1:3737`) | `phoneme_versions` fallback, live SSE progress (`phoneme_sse_start`) | Opt-in (Phoneme's `[rest_api]`), loopback-only. `reqwest` sends no `Origin` header, so it passes phoneme-rest's loopback-Origin guard a webview `fetch` would fail. |
+| **CLI — `phoneme watch`** | Live pipeline progress (`phoneme_watch_start`) | Spawns `phoneme watch`; pipes its stdout JSON lines as Tauri `phoneme-event`. No REST opt-in required. |
+| **phoneme-rest** (`reqwest`, `http://127.0.0.1:3737`) | `phoneme_versions` fallback | Opt-in (Phoneme's `[rest_api]`), loopback-only. `reqwest` sends no `Origin` header, so it passes phoneme-rest's loopback-Origin guard a webview `fetch` would fail. |
 | **Daemon named pipe** (`\\.\pipe\phoneme-daemon`) | Last-resort `phoneme_versions` | **Windows-only** today (`phoneme-ipc` has no Unix-socket transport). Off Windows, pipe-only paths return a clear "only available on Windows for now" notice rather than silently no-op'ing. |
 
 `phoneme_versions` is the clearest example of the cascade: it tries the **CLI** first (`phoneme --json versions <id>`), then **phoneme-rest** (`GET /api/recordings/:id/versions`), then the **named pipe** (`list_transcript_versions`) — see [`phoneme_versions`](../../src-tauri/src/lib.rs).
@@ -94,7 +95,7 @@ All commands live in [`src-tauri/src/lib.rs`](../../src-tauri/src/lib.rs) and ar
 | `phoneme_tags_for(rec_id)` | `--json tag for <rec_id>` | `PhonemeTag[]` for one recording — the **pull** side of sync. Returns `Err` (not `[]`) when unreachable, so "couldn't reach Phoneme" is never mistaken for "no tags". |
 | `phoneme_apply_tags(rec_id, add, remove, colors)` | `tag add` / `tag attach` / `tag detach` | The **push** side: create-if-missing (with color), then attach/detach by name. Any attach/detach failure propagates so the change stays pending. |
 | `phoneme_update_tag(id, name, color)` | `tag update <id> <name> [--color]` | **Global rename** by id — keeps the tag's id and every attachment (see [§3.3](#33-true-global-rename)). |
-| `phoneme_sse_start()` / `phoneme_sse_stop()` | `GET /api/events` | Bridges phoneme-rest SSE `DaemonEvent`s to a Tauri `phoneme-event`; a generation counter cancels a superseded bridge. Used for live progress; the frontend keeps polling as a fallback. |
+| `phoneme_watch_start()` / `phoneme_watch_stop()` | `phoneme watch` (CLI) | Spawns `phoneme watch` as a subprocess (`WATCH_CHILD Mutex<Option<Child>>`); pipes each stdout JSON line as a Tauri `phoneme-event`. Used for live pipeline progress; the frontend keeps polling as a fallback. No REST opt-in required. |
 
 > **Contract-drift safety.** `parse_json_lines()` keeps the good lines and logs (doesn't drop) bad ones, but returns `Err` when there *was* output yet **nothing** parsed — the sign a Phoneme version changed its JSON shape. That surfaces a quiet notice instead of a silently-blank panel. Genuinely empty output (nothing transcribed yet) is a normal empty `Vec`.
 

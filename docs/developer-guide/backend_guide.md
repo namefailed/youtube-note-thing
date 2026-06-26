@@ -93,19 +93,22 @@ REST (`127.0.0.1:3737`) → the Windows daemon named pipe. See
 | `phoneme_apply_tags` | `rec_id`, `add`, `remove`, `colors` | `()` | The *push* side: create-if-missing (with color), then attach/detach by name. |
 | `phoneme_update_tag` | `id`, `name`, `color` | `()` | Rename/recolor a Phoneme catalog tag globally, keeping its id and attachments. |
 | `set_phoneme_bin` | `path` | `()` | Set the in-process override path (Settings → Phoneme CLI path). |
-| `phoneme_import` | `url` | `String` | Hand a YouTube URL to Phoneme to download + transcribe; returns the new recording id. Runs off the async pool (`spawn_blocking`). |
+| `phoneme_import` | `url`, `recipe?` | `String` | Hand a YouTube URL to Phoneme to download + transcribe (with an optional pipeline recipe id); returns the new recording id. Runs off the async pool (`spawn_blocking`). |
 | `phoneme_segments` | `id` | `Vec<Segment>` | A recording's transcript segments (empty while still transcribing). |
 | `phoneme_chapters` | `id` | `Vec<Chapter>` | Stored auto-chapters (read-only `--show`; never triggers generation). |
 | `phoneme_search` | `query` | `Vec<PhonemeHit>` | Semantic search across the whole Phoneme archive. |
 | `phoneme_recording` | `id` | `PhonemeRec` | Full recording row: status, summary, model, language, duration, confidence, entities, tasks. |
 | `phoneme_versions` | `id` | `Vec<TranscriptVersion>` | The whole transcript chain (raw ASR → each step → live) for side-by-side compare. CLI → REST → pipe fallback. |
-| `phoneme_sse_start` | — | `()` | Open phoneme-rest's SSE stream and re-emit each event to the frontend as the Tauri `phoneme-event`. Returns once the stream is confirmed open. |
-| `phoneme_sse_stop` | — | `()` | Stop forwarding SSE events. |
+| `phoneme_recipes` | — | `Vec<PhonemeRecipe>` | Fetch the pipeline recipe list from Phoneme. |
+| `phoneme_daemon_start` | — | `()` | Run `phoneme daemon start` to bring the Phoneme daemon up. |
+| `phoneme_find_recording` | `video_id` | `Option<String>` | Scan the Phoneme archive for a recording linked to a video id; returns the recording id if found. |
+| `phoneme_watch_start` | — | `()` | Spawns `phoneme watch` (CLI), pipes each JSON line as a Tauri `phoneme-event`. Returns once the child is confirmed running. |
+| `phoneme_watch_stop` | — | `()` | Kill the `phoneme watch` child process and stop forwarding events. |
 
 `set_phoneme_bin`, `phoneme_apply_tags`, and the rest of the simple Phoneme
 commands are **synchronous** — `run_phoneme` blocks on a child process. The two
 that can block for a long time (`phoneme_import`) or do network I/O
-(`phoneme_versions`, `phoneme_sse_start`) are `async` and use `spawn_blocking` /
+(`phoneme_versions`, `phoneme_watch_start`) are `async` and use `spawn_blocking` /
 `reqwest` so they don't stall the runtime.
 
 ### YouTube (no account needed) and Google account (`google_*`)
@@ -199,8 +202,9 @@ State that is *not* in the database lives elsewhere by design:
 - **`PHONEME_OVERRIDE`** — a `static Mutex<Option<String>>` holding the
   in-process Phoneme-binary override that `set_phoneme_bin` pushes and
   `resolve_phoneme` reads first.
-- **`SSE_GEN`** — a `static AtomicU64` generation counter so a newer
-  `phoneme_sse_start` cancels the previous SSE bridge task.
+- **`WATCH_CHILD`** — a `static Mutex<Option<Child>>` holding the running
+  `phoneme watch` subprocess so `phoneme_watch_stop` can kill it and a new
+  `phoneme_watch_start` can replace the previous child.
 - **Google tokens** — persisted to `google_tokens.json` in the app data dir
   (next to `ytnt.db`), not in SQLite.
 - **Settings, tag colors, tag-sync snapshots** — all in the frontend's

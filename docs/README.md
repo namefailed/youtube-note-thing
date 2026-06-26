@@ -1,6 +1,6 @@
 # youtube-note-thing Documentation
 
-Complete documentation for **users** and **developers**. **ytnt** is a local-first desktop app for taking timestamped notes on YouTube videos — your library, your notes, and your settings live on your own machine. [Phoneme](https://github.com/) integration (transcripts, summaries, tag sync) is entirely **optional**.
+Complete documentation for **users** and **developers**. **ytnt** is a local-first desktop app for taking timestamped notes on YouTube videos — your library, your notes, and your settings live on your own machine. Phoneme integration (transcripts, summaries, tag sync) is entirely **optional**.
 
 ---
 

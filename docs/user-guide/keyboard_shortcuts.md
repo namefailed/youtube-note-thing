@@ -105,6 +105,7 @@ Press `G`, then a destination:
 
 | Keys | Action |
 | --- | --- |
+| `G` then `G` | Go to the first item in the focused pane (vim-nav on) |
 | `G` then `L` | Focus the video list |
 | `G` then `B` | Focus the sidebar filters |
 | `G` then `V` | Enter the **player** — the YouTube playback keys go live (`Esc` steps out) |
@@ -167,7 +168,7 @@ Focus is trapped inside the open overlay for accessibility, and returns to where
 
 ## In-app cheat sheet
 
-Press `?` to open the built-in cheat sheet. It mirrors this reference for the everyday keys:
+Press `?` to open the built-in cheat sheet. It shows the most common keys — a curated subset of this page:
 
 | Keys | Action |
 | --- | --- |
@@ -181,7 +182,14 @@ Press `?` to open the built-in cheat sheet. It mirrors this reference for the ev
 | `Shift+click` | Select videos (bulk) |
 | `G then L / B` | Focus the list / sidebar filters |
 | `G then V` | Enter the player (playback keys live) |
+| `G then D` | Focus the detail pane's controls |
+| `G then N / T` | Switch detail pane to Notes / Transcript |
+| `G then S` | Open Settings |
 | `H J K L` | Move the cursor (a pane focused, nav on) |
+| `↑ ↓ ← →` | Arrow nav (arrow-nav on) |
+| `Home / End` | First / last item in the focused list |
+| `Enter` | Open (activate) the cursored item |
+| `Space` | Toggle the cursored video in bulk selection |
 | `0–9` | Seek to 0–90% |
 | `↑ / ↓` | Select previous / next note |
 | `Enter / Delete` | Edit / delete selected note |

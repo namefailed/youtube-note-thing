@@ -1,6 +1,7 @@
 import { LitElement, html, css, svg, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { repeat } from "lit/directives/repeat.js";
 import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type Chapter, type PhonemeHit, type GPlaylist, type PlaylistItem, type PlaylistRef, type PhonemeRec, type TranscriptVersion, type PhonemeProbe, type PhonemeRecipe } from "./api";
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR, mergeTagSets, formatViews, relativeDate } from "./lib";
@@ -68,6 +69,8 @@ interface Settings { offset: number; autopause: boolean; vaultDir: string; theme
 type DoctorCheck = { name: string; ok: boolean; cat: "critical" | "warning" | "info"; detail: string; fix?: { label: string; run: () => void } };
 type Editing = { id?: string; t: number; draft: string } | null;
 
+const STAGE_LABEL: Record<string, string> = { queued: "Queued…", transcribing: "Transcribing…", cleaning_up: "Cleaning up the transcript…", summarizing: "Summarizing…", tagging: "Tagging…", hook_running: "Running hooks…", cancelled: "Cancelled" };
+
 @customElement("ytnt-app")
 export class App extends LitElement {
   @state() private videos: VideoWithCount[] = [];
@@ -105,7 +108,7 @@ export class App extends LitElement {
   // Tag colors: pulled from Phoneme (the authority) so a shared tag looks the
   // same in both apps; local picks (localStorage) win and cover ytnt-only tags.
   @state() private phonemeTagColors: Record<string, string> = {};
-  private localTagColors: Record<string, string> = (() => {
+  @state() private localTagColors: Record<string, string> = (() => {
     try { return JSON.parse(localStorage.getItem("ytnt.tagColors") || "{}"); } catch { return {}; }
   })();
   private prevDaemonOk = false;
@@ -122,6 +125,7 @@ export class App extends LitElement {
   // merge. Doubles as the durable "queue": local edits that differ from the base
   // while Phoneme is down get pushed on the next reconcile. localStorage, not a
   // catalog/DB — Phoneme stays the tag authority.
+  // Intentionally non-reactive: it never drives rendering directly.
   private tagSyncBase: Record<string, string[]> = (() => {
     try { return JSON.parse(localStorage.getItem("ytnt.tagSyncBase") || "{}"); } catch { return {}; }
   })();
@@ -148,6 +152,8 @@ export class App extends LitElement {
   @state() private cmpLeft = 0;
   @state() private cmpRight = 0;
   private pollTimer = 0;
+  private _searchTimer = 0;
+  private searchGen = 0;
   @state() private liveOn = false;
   private unlistenPhoneme: (() => void) | null = null;
   @state() private sidebarOpen = localStorage.getItem("ytnt.sidebar") !== "0";
@@ -161,7 +167,8 @@ export class App extends LitElement {
   private player: Player | null = null;
   private lastSaved = 0;
   private lastFocus: HTMLElement | null = null;
-  private settings: Settings = loadSettings();
+  private _titleVideoId: string | null = null;  // video ID captured when player is wired; guards onTitle race
+  @state() private settings: Settings = loadSettings();
   // Keyboard-nav layers (opt-in, mirrors Phoneme's vim_nav / arrow_nav).
   private get vimNav() { return this.settings.vimNav; }
   private get arrowNav() { return this.settings.arrowNav; }
@@ -177,6 +184,10 @@ export class App extends LitElement {
   @state() private cursorBox: { x: number; y: number; w: number; h: number } | null = null;
   @state() private playerActive = false;     // cursor is "in" the video → transport keys live
   private keyboardMode = false;              // the cursor shows only while driving by keyboard
+  private reflowPending = false;             // RAF guard for scroll/resize placeCursor calls
+
+  private _cachedGrid: HTMLElement[][] | null = null;   // cached bucketByRow result; cleared in updated()
+  private _mdCache = new Map<string, string>();           // renderMarkdown cache keyed on note.id+'::'+content
 
   private onKey = (e: KeyboardEvent) => {
     if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") this.keyboardMode = true;
@@ -250,7 +261,13 @@ export class App extends LitElement {
     if (t && t.tagName === "IFRAME") requestAnimationFrame(() => { try { t.blur(); } catch { /* ignore */ } });
   };
   // Keep the fixed overlay cursor glued to its cell as panes scroll / the window resizes.
-  private onReflow = () => { if (this.cursorBox) this.placeCursor(false); };
+  // RAF-guarded: at most one layout read per frame regardless of scroll/resize frequency.
+  private onReflow = () => {
+    if (this.cursorBox && !this.reflowPending) {
+      this.reflowPending = true;
+      requestAnimationFrame(() => { this.reflowPending = false; this.placeCursor(false); });
+    }
+  };
   // A mouse click hands control back to the pointer: hide the cursor until the next keypress.
   private onPointer = () => { if (this.keyboardMode) { this.keyboardMode = false; this.cursorBox = null; this.navHud = null; } };
 
@@ -270,6 +287,7 @@ export class App extends LitElement {
     window.removeEventListener("resize", this.onReflow);
     window.removeEventListener("pointerdown", this.onPointer, true);
     clearInterval(this.probeTimer);
+    clearTimeout(this.pollTimer);
     this.unlistenPhoneme?.();
     if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
   }
@@ -321,7 +339,6 @@ export class App extends LitElement {
   private setTagColor(name: string, hex: string) {
     this.localTagColors = { ...this.localTagColors, [name.toLowerCase()]: hex };
     localStorage.setItem("ytnt.tagColors", JSON.stringify(this.localTagColors));
-    this.requestUpdate();
   }
 
   // --- Tag membership sync (bidirectional; Phoneme is the catalog authority) ---
@@ -452,7 +469,7 @@ export class App extends LitElement {
   }
   private onTitle(title: string) {
     const v = this.current;
-    if (v && !v.title) api.setVideoTitle(v.id, title).then(() => this.refreshVideos());
+    if (v && v.id === this._titleVideoId && !v.title) api.setVideoTitle(v.id, title).then(() => this.refreshVideos());
   }
 
   private async refreshVideos() { this.videos = await api.listVideos(); }
@@ -468,9 +485,9 @@ export class App extends LitElement {
       await this.refreshVideos();
     } catch { /* offline / quota — leave cards as they are */ }
   }
-  private async refreshNotes() { this.notes = this.currentId ? await api.listNotes(this.currentId) : []; }
+  private async refreshNotes() { this.notes = this.currentId ? await api.listNotes(this.currentId) : []; this._mdCache.clear(); }
 
-  private async loadVideo(id: string, url?: string) {
+  private async loadVideo(id: string, url?: string, startSeconds?: number) {
     this.currentId = id;
     this.editing = null; this.filter = ""; this.dur = 0; this.lastSaved = 0; this.selectedId = null;
     this.view = "notes"; this.segments = [];
@@ -478,7 +495,8 @@ export class App extends LitElement {
     if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
     await api.upsertVideo(id, url ?? `https://youtu.be/${id}`);
     await this.refreshVideos();
-    this.player?.load(id, this.current?.last_pos_secs ?? 0);
+    this._titleVideoId = id;
+    this.player?.load(id, startSeconds ?? this.current?.last_pos_secs ?? 0);
     await this.refreshNotes();
     // Pull/push this video's tags with Phoneme (no-op if unlinked or down).
     this.reconcileVideoTags(id).then((changed) => { if (changed) this.refreshVideos(); });
@@ -585,9 +603,15 @@ export class App extends LitElement {
   }
 
   private async runSearch(q: string) {
-    this.searchResults = q.trim() ? await api.searchNotes(q) : [];
-    if (q.trim() && this.phonemeOk) { try { this.phonemeHits = await api.phonemeSearch(q); } catch { this.phonemeHits = []; } }
-    else this.phonemeHits = [];
+    const gen = ++this.searchGen;
+    if (!q.trim()) { this.searchResults = []; this.phonemeHits = []; return; }
+    const [notes, phoneme] = await Promise.all([
+      api.searchNotes(q),
+      (q.trim() && this.phonemeOk) ? api.phonemeSearch(q).catch(() => [] as typeof this.phonemeHits) : Promise.resolve([] as typeof this.phonemeHits),
+    ]);
+    if (this.searchGen !== gen) return; // superseded by a later query
+    this.searchResults = notes;
+    this.phonemeHits = phoneme;
   }
   private openPhonemeHit(h: PhonemeHit) {
     const vid = this.videos.find((v) => parseRef(v.ext_ref)?.ref === h.id)?.id;
@@ -632,7 +656,10 @@ export class App extends LitElement {
     return new Promise((resolve) => {
       this.confirmResolve = resolve;
       this.confirmBox = { message, title: opts.title ?? "Are you sure?", confirmLabel: opts.confirmLabel ?? "Confirm", kind: opts.kind ?? "warning" };
-      this.updateComplete.then(() => (this.renderRoot.querySelector(".confirm-yes") as HTMLElement)?.focus());
+      this.updateComplete.then(() => {
+        const sel = opts.kind === "danger" ? ".confirm-cancel" : ".confirm-yes";
+        (this.renderRoot.querySelector(sel) as HTMLElement)?.focus();
+      });
     });
   }
   private answerConfirm(v: boolean) {
@@ -652,8 +679,7 @@ export class App extends LitElement {
   }
   private async openHit(h: SearchHit) {
     this.closeModal();
-    await this.loadVideo(h.video_id);
-    setTimeout(() => this.seek(h.t_secs), 900);
+    await this.loadVideo(h.video_id, undefined, h.t_secs);
   }
 
   private async exportJson() { download("ytnt-backup.json", await api.exportJson(), "application/json"); this.flash("Exported backup", "ok"); }
@@ -781,8 +807,7 @@ export class App extends LitElement {
     }
   }
   private stageLabel(s: string): string {
-    const m: Record<string, string> = { queued: "Queued…", transcribing: "Transcribing…", cleaning_up: "Cleaning up the transcript…", summarizing: "Summarizing…", tagging: "Tagging…", hook_running: "Running hooks…", cancelled: "Cancelled" };
-    return m[s] ?? (s.endsWith("_failed") ? "A step failed — the transcript may still be usable" : s);
+    return STAGE_LABEL[s] ?? (s.endsWith("_failed") ? "A step failed — the transcript may still be usable" : s);
   }
   private async loadCaptions() {
     if (!this.currentId) return;
@@ -798,13 +823,12 @@ export class App extends LitElement {
     if (k === "theme") document.documentElement.dataset.theme = String(v);
     if (k === "stripTitlebar") win()?.setDecorations(!v)?.catch(() => {});
     if (k === "phonemeBin") api.setPhonemeBin(String(v)).then(() => this.probePhoneme()).catch(() => {});
-    this.requestUpdate();
   }
   private flash(msg: string, kind: "info" | "ok" | "err" = "info") {
     const id = ++this.toastN;
     this.toasts = [...this.toasts, { id, msg, kind }];
-    setTimeout(() => (this.toasts = this.toasts.map((t) => (t.id === id ? { ...t, out: true } : t))), 2600);
-    setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), 2800);
+    setTimeout(() => { if (!this.isConnected) return; this.toasts = this.toasts.map((t) => (t.id === id ? { ...t, out: true } : t)); }, 2600);
+    setTimeout(() => { if (!this.isConnected) return; this.toasts = this.toasts.filter((t) => t.id !== id); }, 2800);
   }
   private async checkUpdates() {
     this.flash("Checking for updates…");
@@ -921,6 +945,7 @@ export class App extends LitElement {
     e.preventDefault(); this.activateGridCell(); return true;
   }
   // ── Spatial hjkl grid over the sidebar / detail pane (the list uses kbdIndex). ──
+  // Interactive elements reachable via spatial nav (hjkl); update deliberately when adding nav-reachable elements.
   private GRID_SEL = "#playerWrap,button:not([disabled]),summary,input:not([type='hidden']):not([disabled]),.np-title,.tag-chip-body";
   private PANE_ORDER: Array<"sidebar" | "list" | "detail"> = ["sidebar", "list", "detail"];
   private gridCells(pane: "sidebar" | "detail"): HTMLElement[] {
@@ -928,6 +953,7 @@ export class App extends LitElement {
     return root ? [...root.querySelectorAll<HTMLElement>(this.GRID_SEL)].filter(isVisible) : [];
   }
   private bucketByRow(cells: HTMLElement[]): HTMLElement[][] {
+    if (this._cachedGrid) return this._cachedGrid;
     const TOL = 10;
     const withR = cells.map((el) => ({ el, r: el.getBoundingClientRect() })).sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left);
     const rows: HTMLElement[][] = []; let bucket: { el: HTMLElement; r: DOMRect }[] = []; let rowTop = -Infinity;
@@ -935,7 +961,7 @@ export class App extends LitElement {
     for (const it of withR) {
       if (it.r.top - rowTop > TOL) { flush(); bucket = [it]; rowTop = it.r.top; } else bucket.push(it);
     }
-    flush(); return rows;
+    flush(); this._cachedGrid = rows; return rows;
   }
   private centerX(el: HTMLElement | undefined): number { if (!el) return 0; const r = el.getBoundingClientRect(); return r.left + r.width / 2; }
   private nearestCol(row: HTMLElement[], x: number): number {
@@ -1021,9 +1047,10 @@ export class App extends LitElement {
     const cell = this.activeCellEl();
     if (!cell) return;
     if (cell.id === "playerWrap") { this.playerActive = true; this.placeCursor(true); return; }
-    if (cell.matches("input,.tag-add,.np-title")) cell.focus(); else cell.click();
+    if (cell.matches("input,.tag-add")) cell.focus(); else cell.click();
   }
   private async bulkDelete() {
+    if (!(await this.confirm('Delete selected videos and all their notes?', { kind: 'danger' }))) return;
     const ids = [...this.selected];
     for (const id of ids) { if (id === this.currentId) this.deselect(); await api.deleteVideo(id); }
     this.selected = new Set();
@@ -1033,15 +1060,15 @@ export class App extends LitElement {
   private async bulkTag(name: string) {
     const t = name.trim(); if (!t) return;
     const n = this.selected.size;
-    for (const id of this.selected) {
+    await Promise.all([...this.selected].map((id) => {
       const v = this.videos.find((x) => x.id === id);
-      if (v && !v.tags.includes(t)) await api.setVideoTags(id, [...v.tags, t]);
-    }
+      return (v && !v.tags.includes(t)) ? api.setVideoTags(id, [...v.tags, t]) : Promise.resolve();
+    }));
     await this.refreshVideos();
-    for (const id of this.selected) {
+    await Promise.allSettled([...this.selected].map((id) => {
       const v = this.videos.find((x) => x.id === id);
-      if (v && this.phonemeRef(v)) await this.reconcileVideoTags(id);
-    }
+      return (v && this.phonemeRef(v)) ? this.reconcileVideoTags(id) : Promise.resolve(false);
+    }));
     await this.refreshVideos();
     this.flash(`Tagged ${n} video${n > 1 ? "s" : ""} “${t}”`, "ok");
   }
@@ -1184,11 +1211,13 @@ export class App extends LitElement {
     localStorage.setItem("ytnt.list", this.listOpen ? "1" : "0");
   }
   private toggleFold(k: string) { this.folds = { ...this.folds, [k]: !this.folds[k] }; }
-  updated() {
-    this.toggleAttribute("collapsed", !this.sidebarOpen);
-    this.toggleAttribute("nolist", !this.listOpen);
-    this.placeCursor(false);
-    this.setAttribute("nav-pane", this.focusedPane && this.cursorBox ? this.focusedPane : "");
+  updated(changed: Map<string, unknown>) {
+    this._cachedGrid = null; // invalidate grid cache on every re-render
+    if (changed.has("sidebarOpen")) this.toggleAttribute("collapsed", !this.sidebarOpen);
+    if (changed.has("listOpen")) this.toggleAttribute("nolist", !this.listOpen);
+    if (changed.has("focusedPane") || changed.has("cursorBox")) this.setAttribute("nav-pane", this.focusedPane && this.cursorBox ? this.focusedPane : "");
+    const navRelevant = ["focusedPane", "keyboardMode", "cursorBox", "navHud", "sidebarOpen", "listOpen", "playerActive"];
+    if (navRelevant.some((k) => changed.has(k))) this.placeCursor(false);
   }
   private allTags(): string[] {
     return [...new Set(this.videos.flatMap((v) => v.tags))].sort((a, b) => a.localeCompare(b));
@@ -1290,10 +1319,12 @@ export class App extends LitElement {
           </div>
           ${!this.folds.lib ? html`
             <button class="sidebar-item ${this.libView === "all" && !this.tagFilter ? "on" : ""}"
+              ?aria-pressed=${this.libView === "all" && !this.tagFilter}
               @click=${() => { this.libView = "all"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">${I.film}</span><span class="si-label">All videos</span><span class="count">${this.videos.length}</span>
             </button>
             <button class="sidebar-item ${this.libView === "transcript" ? "on" : ""}"
+              ?aria-pressed=${this.libView === "transcript" && !this.tagFilter}
               @click=${() => { this.libView = "transcript"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">${I.captions}</span><span class="si-label">With transcript</span><span class="count">${transcriptCount}</span>
             </button>` : nothing}
@@ -1307,12 +1338,14 @@ export class App extends LitElement {
           </div>
           ${!this.folds.tags ? html`
             <button class="sidebar-item ${this.libView === "untagged" && !this.tagFilter ? "on" : ""}"
+              ?aria-pressed=${this.libView === "untagged" && !this.tagFilter}
               @click=${() => { this.libView = "untagged"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">#</span><span class="si-label">Untagged</span>
               <span class="tag-dot tag-dot-none" title="Videos with no tags"></span>
               <span class="count">${untaggedCount}</span>
             </button>
             <button class="sidebar-item ${this.libView === "tagged" && !this.tagFilter ? "on" : ""}"
+              ?aria-pressed=${this.libView === "tagged" && !this.tagFilter}
               @click=${() => { this.libView = "tagged"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon tag-hash">#</span><span class="si-label">Tagged</span>
               <span class="tag-dot tag-dot-rainbow" title="Videos with at least one tag"></span>
@@ -1353,10 +1386,10 @@ export class App extends LitElement {
         <div class="lib" id="pane-list" tabindex="0"
           @focusin=${() => { if (this.kbdIndex < 0 && this.navVids.length) this.kbdIndex = Math.max(0, this.navVids.findIndex((v) => v.id === this.currentId)); }}
           @keydown=${(e: KeyboardEvent) => this.onListKey(e)}>
-          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? vids.map((v, i) => {
+          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? repeat(vids, (v) => v.id, (v, i) => {
             const sub = [v.channel, v.view_count != null ? formatViews(v.view_count) : "", v.published_at ? relativeDate(v.published_at) : ""].filter(Boolean);
             return html`
-            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""} ${this.freshVidIds.has(v.id) ? "fresh" : ""}" title="Shift-click to select" @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
+            <button class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""} ${this.freshVidIds.has(v.id) ? "fresh" : ""}" title="Shift-click to select" ?aria-current=${v.id === this.currentId ? "true" : nothing} @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
               <div class="thumbwrap">
                 <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                   @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
@@ -1372,7 +1405,7 @@ export class App extends LitElement {
                 <button class="ghost pin ${v.pinned ? "on" : ""}" title=${v.pinned ? "Unpin" : "Pin to top"} @click=${(e: Event) => { e.stopPropagation(); this.togglePin(v.id, v.pinned); }}>${I.pin}</button>
                 <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
               </div>
-            </div>`;
+            </button>`;
           }) : html`<div class="empty-lib">${this.videos.length
               ? html`No videos match this filter.<br /><button class="linkbtn" @click=${() => { this.tagFilter = null; this.libView = "all"; }}>Clear filters</button>`
               : "No videos yet — load one to start."}</div>`}
@@ -1386,7 +1419,7 @@ export class App extends LitElement {
               ? html`<input class="np-title-edit" type="text" .value=${this.current.title || ""}
                   @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") { e.preventDefault(); this.saveTitle((e.target as HTMLInputElement).value); } else if (e.key === "Escape") { e.preventDefault(); this.titleEditing = false; } }}
                   @blur=${(e: Event) => this.saveTitle((e.target as HTMLInputElement).value)} />`
-              : html`<div class="np-title" title="Click to rename" @click=${() => { this.titleEditing = true; this.updateComplete.then(() => (this.renderRoot.querySelector(".np-title-edit") as HTMLInputElement)?.select()); }}>${this.current.title || this.current.id}</div>`}
+              : html`<button class="np-title" aria-label="Rename: ${this.current.title || this.current.id}" @click=${() => { this.titleEditing = true; this.updateComplete.then(() => (this.renderRoot.querySelector(".np-title-edit") as HTMLInputElement)?.select()); }}>${this.current.title || this.current.id}</button>`}
             <div class="np-meta">${this.current.channel || ""}${(this.dur || this.current.duration) ? html` · ${formatTime(this.dur || this.current.duration || 0)}` : nothing}</div>
           </div>
           <div class="np-actions">
@@ -1453,9 +1486,9 @@ export class App extends LitElement {
         </div>` : nothing}
 
         <div class="toolbar ${this.currentId ? "" : "hidden"}">
-          <div class="tabs">
-            <button class="tab ${this.view === "notes" ? "on" : ""}" @click=${() => (this.view = "notes")}>Notes</button>
-            <button class="tab ${this.view === "transcript" ? "on" : ""}" @click=${() => this.openTranscript()}>Transcript</button>
+          <div class="tabs" role="tablist">
+            <button class="tab ${this.view === "notes" ? "on" : ""}" role="tab" ?aria-selected=${this.view === "notes"} @click=${() => (this.view = "notes")}>Notes</button>
+            <button class="tab ${this.view === "transcript" ? "on" : ""}" role="tab" ?aria-selected=${this.view === "transcript"} @click=${() => this.openTranscript()}>Transcript</button>
           </div>
           ${this.view === "notes" ? html`
             <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">Alt+N</span></button>
@@ -1550,9 +1583,12 @@ export class App extends LitElement {
 
   private renderNote(n: Note) {
     const canReorder = !this.filter;
-    return html`<div class="note ${this.selectedId === n.id ? "selected" : ""}" role="listitem" @click=${() => (this.selectedId = n.id)}>
+    const mdKey = n.id + "::" + n.content;
+    let md = this._mdCache.get(mdKey);
+    if (md === undefined) { md = renderMarkdown(n.content); this._mdCache.set(mdKey, md); }
+    return html`<div class="note ${this.selectedId === n.id ? "selected" : ""}" role="listitem" ?aria-selected=${this.selectedId === n.id} @click=${() => (this.selectedId = n.id)}>
       <button class="ts" title="Jump to ${formatTime(n.t_secs)}" aria-label="Jump to ${formatTime(n.t_secs)}" @click=${() => this.seek(n.t_secs)}>${formatTime(n.t_secs)}</button>
-      <div class="grow body">${unsafeHTML(renderMarkdown(n.content))}</div>
+      <div class="grow body">${unsafeHTML(md)}</div>
       <div class="acts">
         ${canReorder ? html`
           <button class="ghost" title="Move up" aria-label="Move up" @click=${() => this.move(n, -1)}>${I.up}</button>
@@ -1568,7 +1604,7 @@ export class App extends LitElement {
     return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
       <div class="panel" role="dialog" aria-modal="true" aria-label="Search notes" @click=${(e: Event) => e.stopPropagation()}>
         <div class="sbar">${I.search}<input type="text" placeholder="Search all notes…"
-          @input=${(e: Event) => this.runSearch((e.target as HTMLInputElement).value)} /></div>
+          @input=${(e: Event) => { const q = (e.target as HTMLInputElement).value; clearTimeout(this._searchTimer); this._searchTimer = setTimeout(() => this.runSearch(q), 250); }} /></div>
         <div class="results">
           ${this.searchResults.map((h) => html`<button class="hit" @click=${() => this.openHit(h)}>
             <span class="ts">${formatTime(h.t_secs)}</span>
@@ -1641,12 +1677,12 @@ export class App extends LitElement {
   private renderConfirm() {
     const c = this.confirmBox!;
     return html`<div class="overlay confirm-overlay" @click=${() => this.answerConfirm(false)}
-      @keydown=${(e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); this.answerConfirm(false); } else if (e.key === "Enter") { e.preventDefault(); this.answerConfirm(true); } }}>
+      @keydown=${(e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); this.answerConfirm(false); } }}>
       <div class="panel confirm-box" role="alertdialog" aria-modal="true" aria-label=${c.title} @click=${(e: Event) => e.stopPropagation()}>
         <div class="confirm-title">${c.title}</div>
         <div class="confirm-msg">${c.message}</div>
         <div class="confirm-actions">
-          <button class="btn" @click=${() => this.answerConfirm(false)}>Cancel</button>
+          <button class="btn confirm-cancel" @click=${() => this.answerConfirm(false)}>Cancel</button>
           <button class="btn ${c.kind === "danger" ? "danger" : "primary"} confirm-yes" @click=${() => this.answerConfirm(true)}>${c.confirmLabel}</button>
         </div>
       </div>
@@ -1835,11 +1871,11 @@ export class App extends LitElement {
     // Done — Transcript / Compare / Summary views.
     return html`<div class="notes tpane">
       ${this.renderCompatNotice()}
-      <div class="tview-tabs">
-        <button class="tab ${this.transcriptView === "transcript" ? "on" : ""}" @click=${() => (this.transcriptView = "transcript")}>Transcript</button>
-        ${this.chapters.length ? html`<button class="tab ${this.transcriptView === "chapters" ? "on" : ""}" @click=${() => (this.transcriptView = "chapters")}>Chapters (${this.chapters.length})</button>` : nothing}
-        <button class="tab ${this.transcriptView === "compare" ? "on" : ""}" @click=${() => (this.transcriptView = "compare")}>Compare${this.phonemeVersions.length > 1 ? ` (${this.phonemeVersions.length})` : ""}</button>
-        <button class="tab ${this.transcriptView === "summary" ? "on" : ""}" @click=${() => (this.transcriptView = "summary")}>Summary</button>
+      <div class="tview-tabs" role="tablist">
+        <button class="tab ${this.transcriptView === "transcript" ? "on" : ""}" role="tab" ?aria-selected=${this.transcriptView === "transcript"} @click=${() => (this.transcriptView = "transcript")}>Transcript</button>
+        ${this.chapters.length ? html`<button class="tab ${this.transcriptView === "chapters" ? "on" : ""}" role="tab" ?aria-selected=${this.transcriptView === "chapters"} @click=${() => (this.transcriptView = "chapters")}>Chapters (${this.chapters.length})</button>` : nothing}
+        <button class="tab ${this.transcriptView === "compare" ? "on" : ""}" role="tab" ?aria-selected=${this.transcriptView === "compare"} @click=${() => (this.transcriptView = "compare")}>Compare${this.phonemeVersions.length > 1 ? ` (${this.phonemeVersions.length})` : ""}</button>
+        <button class="tab ${this.transcriptView === "summary" ? "on" : ""}" role="tab" ?aria-selected=${this.transcriptView === "summary"} @click=${() => (this.transcriptView = "summary")}>Summary</button>
       </div>
       ${this.transcriptView === "summary" ? this.renderSummary()
         : this.transcriptView === "chapters" ? this.renderChapters()
@@ -2020,7 +2056,7 @@ export class App extends LitElement {
     .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--fg-faded); padding:14px 16px 6px; }
     .lib { flex:1; min-height:0; overflow:auto; padding:6px 8px 8px; display:flex; flex-direction:column; gap:2px; }
     .detail-empty { color:var(--fg-muted); }
-    .libcard { display:flex; gap:9px; align-items:flex-start; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; transition:background var(--ui-motion-fast), transform var(--ui-motion-fast); }
+    .libcard { display:flex; gap:9px; align-items:flex-start; padding:6px; border-radius:var(--r-sm); cursor:pointer; position:relative; background:transparent; border:none; color:inherit; text-align:left; width:100%; transition:background var(--ui-motion-fast), transform var(--ui-motion-fast); }
     .libcard:hover { background:var(--hover); transform:translateX(2px); }
     .libcard.active, .libcard.active:hover { transform:none; background:color-mix(in srgb, var(--accent) 22%, transparent);
       box-shadow:inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 80%, white), 0 2px 16px color-mix(in srgb, var(--accent) 22%, transparent); }
@@ -2206,7 +2242,7 @@ export class App extends LitElement {
     .appbar input { flex:1; }
     .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; }
     .ham:hover { background:var(--hover); color:var(--fg-default); }
-    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; margin-left:4px; padding:0; border:none; cursor:pointer; transition:background var(--ui-motion-fast), box-shadow var(--ui-motion-fast); }
+    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; padding:10px; margin:-10px; border:none; cursor:pointer; transition:background var(--ui-motion-fast), box-shadow var(--ui-motion-fast); }
     .hdot:hover { box-shadow:0 0 0 3px color-mix(in srgb, var(--fg-default) 16%, transparent); }
     .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
     .hdot.warn { background:var(--warn); box-shadow:0 0 8px color-mix(in srgb, var(--warn) 70%, transparent); }
@@ -2219,7 +2255,7 @@ export class App extends LitElement {
     .nowplaying { display:flex; align-items:center; gap:12px; }
     .np-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
     .np-main { flex:1; min-width:0; }
-    .np-title { font-weight:650; font-size:15.5px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:text; }
+    .np-title { font-weight:650; font-size:15.5px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:text; background:none; border:none; color:inherit; padding:0; text-align:left; }
     .np-title:hover { color:var(--accent); }
     .np-title-edit { font-weight:650; font-size:15.5px; letter-spacing:-.01em; width:100%; background:var(--bg-deep); border:1px solid var(--accent); border-radius:var(--r-sm); padding:2px 8px; color:var(--fg-default); }
     .np-meta { font-size:12px; color:var(--fg-faded); margin-top:1px; }
@@ -2232,6 +2268,7 @@ export class App extends LitElement {
     .fs-btn { position:absolute; bottom:10px; right:10px; z-index:4; display:inline-flex; padding:7px; border-radius:var(--r-sm);
       background:color-mix(in srgb, var(--bg-deep) 55%, transparent); border:1px solid transparent; color:#fff; opacity:0; cursor:pointer; transition:opacity var(--ui-motion-fast); }
     #playerWrap:hover .fs-btn { opacity:.85; }
+    #playerWrap:focus-within .fs-btn { opacity:.85; }
     .fs-btn:hover { opacity:1; background:color-mix(in srgb, var(--bg-deep) 80%, transparent); }
     .fs-note { position:absolute; inset:0; z-index:6; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.45); backdrop-filter:blur(2px); }
     .fs-note-card { width:min(560px, 88%); display:flex; flex-direction:column; gap:9px; padding:14px; border-radius:12px;
@@ -2336,6 +2373,8 @@ export class App extends LitElement {
     .body ul,.body ol { margin:.3em 0; padding-left:1.3em; }
     .acts { display:flex; gap:2px; opacity:0; transition:opacity .12s; flex:0 0 auto; }
     .note:hover .acts { opacity:1; }
+    .note:focus-within .acts { opacity:1; }
+    .libcard:focus-within .lc-actions, .libcard:focus .lc-actions { opacity:1; }
     textarea { width:100%; resize:vertical; min-height:62px; line-height:1.5; }
     .empty { min-height:46vh; display:flex; flex-direction:column; align-items:center; justify-content:center; margin-inline:auto; text-align:center; color:var(--fg-muted); max-width:340px; line-height:1.6; padding:40px; }
     .empty h3 { margin:0 0 8px; color:var(--fg-default); font-size:14px; font-weight:600; }

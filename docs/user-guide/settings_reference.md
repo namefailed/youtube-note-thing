@@ -152,11 +152,13 @@ All of these settings serialize to one JSON object in `localStorage` under `ytnt
 
 | Key | Holds |
 | --- | --- |
-| `ytnt.settings` | Every field on this page (`offset`, `autopause`, `vaultDir`, `theme`, `stripTitlebar`, `gClientId`, `gClientSecret`, `hiddenPlaylists`, `phonemeBin`, `syncTags`). |
+| `ytnt.settings` | Every field on this page (`offset`, `autopause`, `vaultDir`, `theme`, `stripTitlebar`, `gClientId`, `gClientSecret`, `hiddenPlaylists`, `phonemeBin`, `syncTags`, `vimNav`, `arrowNav`, `phonemeRecipe`). |
 | `ytnt.tagColors` | Your local tag color overrides. |
 | `ytnt.tagSyncBase` | Per-video snapshots used as the base for the three-way tag merge. |
 
-The defaults, if a field is missing, are: `offset` `3`, `autopause` on, `vaultDir` empty, `theme` `catppuccin-mocha`, `stripTitlebar` off, `gClientId`/`gClientSecret` empty, `hiddenPlaylists` empty, `phonemeBin` empty, `syncTags` on.
+The defaults, if a field is missing, are: `offset` `3`, `autopause` on, `vaultDir` empty, `theme` `catppuccin-mocha`, `stripTitlebar` off, `gClientId`/`gClientSecret` empty, `hiddenPlaylists` empty, `phonemeBin` empty, `syncTags` on, `vimNav` off, `arrowNav` off, `phonemeRecipe` empty.
+
+`phonemeRecipe` stores the ID of the last-selected Phoneme transcription recipe for a given video. It defaults to an empty string and is updated automatically when you pick a recipe in the Phoneme panel — you will not normally edit this by hand.
 
 > [!TIP]
 > You almost never need to edit `localStorage` by hand — every value above is exposed in the dialog. Prefer the UI; it re-applies the theme, window decorations, and Phoneme probe for you on change.

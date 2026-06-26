@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+// Interface shapes mirror Rust structs in src-tauri/src/db.rs — that file is the source of truth for field names and types.
 export interface VideoWithCount {
   id: string; title: string; channel: string | null; url: string;
   duration: number | null; last_pos_secs: number; manual_order: boolean; note_count: number; tags: string[];
@@ -50,7 +51,6 @@ export const api = {
   importJson: (json: string) => invoke<void>("import_json", { json }),
   saveMarkdown: (dir: string, name: string, content: string) =>
     invoke<string>("save_markdown", { dir, name, content }),
-  phonemeAvailable: () => invoke<boolean>("phoneme_available"),
   phonemeProbe: () => invoke<PhonemeProbe>("phoneme_probe"),
   phonemeTags: () => invoke<PhonemeTag[]>("phoneme_tags"),
   phonemeTagsFor: (recId: string) => invoke<PhonemeTag[]>("phoneme_tags_for", { recId }),

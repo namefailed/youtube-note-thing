@@ -28,7 +28,7 @@ pub struct VideoWithCount {
     pub published_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct Video {
     pub id: String,
     pub title: String,
@@ -76,19 +76,6 @@ pub struct PlaylistRef {
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
-pub struct BackupVideo {
-    pub id: String,
-    pub title: String,
-    pub channel: Option<String>,
-    pub url: String,
-    pub duration: Option<i64>,
-    pub last_pos_secs: f64,
-    pub manual_order: bool,
-    pub tags: Json<Vec<String>>,
-    pub ext_ref: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct BackupNote {
     pub id: String,
     pub video_id: String,
@@ -99,7 +86,7 @@ pub struct BackupNote {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Backup {
-    pub videos: Vec<BackupVideo>,
+    pub videos: Vec<Video>,
     pub notes: Vec<BackupNote>,
 }
 
@@ -107,9 +94,9 @@ impl Db {
     pub async fn list_videos(&self) -> Result<Vec<VideoWithCount>, sqlx::Error> {
         sqlx::query_as::<_, VideoWithCount>(
             "SELECT v.id, v.title, v.channel, v.url, v.duration, v.last_pos_secs, v.manual_order, v.tags, v.ext_ref, v.pinned,
-                    v.view_count, v.published_at,
-                    (SELECT COUNT(*) FROM notes n WHERE n.video_id = v.id) AS note_count
-             FROM videos v ORDER BY v.added_at DESC",
+                    v.view_count, v.published_at, COUNT(n.id) AS note_count
+             FROM videos v LEFT JOIN notes n ON n.video_id = v.id
+             GROUP BY v.id ORDER BY v.added_at DESC",
         )
         .fetch_all(&self.pool)
         .await
@@ -139,7 +126,7 @@ impl Db {
     }
 
     pub async fn set_tags(&self, id: &str, tags: &[String]) -> Result<(), sqlx::Error> {
-        let json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
+        let json = serde_json::to_string(tags).expect("Vec<String> is always serializable");
         sqlx::query("UPDATE videos SET tags = ? WHERE id = ?")
             .bind(json)
             .bind(id)
@@ -160,35 +147,6 @@ impl Db {
     /// Fill YouTube metadata for one video (from the Data API). NULL args leave
     /// the existing value; an empty title keeps the current one too.
     #[allow(clippy::too_many_arguments)]
-    pub async fn set_video_meta(
-        &self,
-        id: &str,
-        title: Option<&str>,
-        channel: Option<&str>,
-        duration: Option<i64>,
-        view_count: Option<i64>,
-        published_at: Option<&str>,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "UPDATE videos SET
-                title        = COALESCE(NULLIF(?, ''), title),
-                channel      = COALESCE(?, channel),
-                duration     = COALESCE(?, duration),
-                view_count   = COALESCE(?, view_count),
-                published_at = COALESCE(?, published_at)
-             WHERE id = ?",
-        )
-        .bind(title)
-        .bind(channel)
-        .bind(duration)
-        .bind(view_count)
-        .bind(published_at)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
     pub async fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE videos SET pinned = ? WHERE id = ?")
             .bind(pinned)
@@ -302,21 +260,16 @@ impl Db {
 
     pub async fn create_note(&self, video_id: &str, t_secs: f64, content: &str) -> Result<Note, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
-        sqlx::query(
+        sqlx::query_as::<_, Note>(
             "INSERT INTO notes (id, video_id, t_secs, content, order_index)
-             VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(order_index), 0) + 1 FROM notes WHERE video_id = ?))",
+             VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(order_index), 0) + 1 FROM notes WHERE video_id = ?))
+             RETURNING id, video_id, t_secs, content, order_index",
         )
         .bind(&id)
         .bind(video_id)
         .bind(t_secs)
         .bind(content)
         .bind(video_id)
-        .execute(&self.pool)
-        .await?;
-        sqlx::query_as::<_, Note>(
-            "SELECT id, video_id, t_secs, content, order_index FROM notes WHERE id = ?",
-        )
-        .bind(&id)
         .fetch_one(&self.pool)
         .await
     }
@@ -387,7 +340,7 @@ impl Db {
     }
 
     pub async fn export(&self) -> Result<Backup, sqlx::Error> {
-        let videos = sqlx::query_as::<_, BackupVideo>(
+        let videos = sqlx::query_as::<_, Video>(
             "SELECT id, title, channel, url, duration, last_pos_secs, manual_order, tags, ext_ref FROM videos",
         )
         .fetch_all(&self.pool)
@@ -414,7 +367,7 @@ impl Db {
             .bind(v.duration)
             .bind(v.last_pos_secs)
             .bind(v.manual_order)
-            .bind(serde_json::to_string(&v.tags.0).unwrap_or_else(|_| "[]".to_string()))
+            .bind(serde_json::to_string(&v.tags.0).expect("Vec<String> is always serializable"))
             .bind(v.ext_ref.as_deref())
             .execute(&mut *tx)
             .await?;
@@ -433,5 +386,87 @@ impl Db {
             .await?;
         }
         tx.commit().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqliteConnectOptions;
+    use std::str::FromStr;
+
+    /// Open a fresh in-memory SQLite pool and run all migrations on it.
+    async fn test_db() -> Db {
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        Db { pool }
+    }
+
+    /// Seed a db with one video and two notes; export; import into a fresh db;
+    /// assert row counts and content match.
+    #[tokio::test]
+    async fn roundtrip_export_import() {
+        let src = test_db().await;
+
+        // seed
+        src.upsert_video("vid1", "https://youtu.be/vid1").await.unwrap();
+        let n1 = src.create_note("vid1", 1.0, "note alpha").await.unwrap();
+        let n2 = src.create_note("vid1", 2.5, "note beta").await.unwrap();
+
+        // export
+        let backup = src.export().await.unwrap();
+        assert_eq!(backup.videos.len(), 1);
+        assert_eq!(backup.notes.len(), 2);
+
+        // import into a fresh db
+        let dst = test_db().await;
+        dst.import(backup).await.unwrap();
+
+        let videos = dst.list_videos().await.unwrap();
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].id, "vid1");
+        assert_eq!(videos[0].note_count, 2);
+
+        let notes = dst.list_notes("vid1").await.unwrap();
+        assert_eq!(notes.len(), 2);
+        // both note IDs and content must survive the round-trip
+        let ids: Vec<&str> = notes.iter().map(|n| n.id.as_str()).collect();
+        assert!(ids.contains(&n1.id.as_str()));
+        assert!(ids.contains(&n2.id.as_str()));
+        let contents: Vec<&str> = notes.iter().map(|n| n.content.as_str()).collect();
+        assert!(contents.contains(&"note alpha"));
+        assert!(contents.contains(&"note beta"));
+    }
+
+    /// Importing notes whose video_id is absent from the backup videos list must
+    /// return a FK error rather than silently succeeding.
+    #[tokio::test]
+    async fn import_orphan_note_returns_fk_error() {
+        let db = test_db().await;
+
+        // Build a backup with a note referencing a video that is NOT in the backup.
+        let backup = Backup {
+            videos: vec![],
+            notes: vec![BackupNote {
+                id: "note-orphan".into(),
+                video_id: "no-such-video".into(),
+                t_secs: 0.0,
+                content: "orphan".into(),
+                order_index: 0,
+            }],
+        };
+
+        let result = db.import(backup).await;
+        assert!(
+            result.is_err(),
+            "expected FK error when importing a note with no matching video"
+        );
     }
 }
