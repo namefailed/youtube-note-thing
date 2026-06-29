@@ -67,12 +67,11 @@ Phoneme exposes three transports. ytnt prefers the one that needs the least setu
 
 > **CLI / transport parity.** The same recording data is reachable by whichever transport is up. The full transcript-version chain (raw ASR → each pipeline step → live) is the one feature that originally needed the pipe; the CLI and REST routes were added so it works cross-platform when the pipe can't be dialed.
 
-### 2.3 Detecting availability — `phoneme_available` vs `phoneme_probe`
+### 2.3 Detecting availability — `phoneme_probe`
 
 | Command | Returns | Meaning |
 |---------|---------|---------|
-| `phoneme_available` | `bool` | A `phoneme --json list --limit 1` succeeded — the full feature path (daemon) is usable. |
-| `phoneme_probe` | `PhonemeProbe { present, daemon_ok, version, compatible }` | Richer: `present` = CLI runs (`phoneme version` succeeds, no daemon needed); `daemon_ok` = a `list` succeeded; `compatible` = `version >= MIN_PHONEME_VERSION` (`1.8`). |
+| `phoneme_probe` | `PhonemeProbe { present, daemon_ok, version, compatible, path }` | `present` = CLI runs (`phoneme version` succeeds, no daemon needed); `daemon_ok` = a `--json list --limit 1` succeeded (the full daemon feature path is usable); `compatible` = `version >= MIN_PHONEME_VERSION` (`1.8`); `path` = the resolved CLI path. |
 
 The frontend **polls `phoneme_probe`** so a daemon that dies or starts mid-session is reflected live, and a too-old CLI degrades loudly (a "update Phoneme" notice) instead of showing blank panels. An **unknown/unparseable version is treated as compatible** — don't lock the user out of a custom build. The minimum is the lowest version whose `--json` contract ytnt was built against (e.g. `chapters --show`, `show --segments`).
 
@@ -83,7 +82,6 @@ All commands live in [`src-tauri/src/lib.rs`](../../src-tauri/src/lib.rs) and ar
 | Command | Underlying call | Returns / notes |
 |---------|-----------------|-----------------|
 | `set_phoneme_bin(path)` | — | Pushes the `phonemeBin` override into `PHONEME_OVERRIDE`. |
-| `phoneme_available()` | `--json list --limit 1` | `bool`. |
 | `phoneme_probe()` | `version` + `list` | `PhonemeProbe`. |
 | `phoneme_import(url)` | `import <url>` | Hands a YouTube URL to Phoneme (download + queue transcription); returns the new recording id. Runs on `spawn_blocking` because the download blocks. |
 | `phoneme_recording(id)` | `--json show <id>` | `PhonemeRec` — status to poll, title, summary, model, language, duration, confidence, entities, tasks. |

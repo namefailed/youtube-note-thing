@@ -28,6 +28,9 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 url = "2"
 
-[features]
-# keep parity with the tauri template; nothing custom yet
-default = []
+# Smaller, faster shipped binary. panic strategy left at default (unwind) so
+# Tauri's per-command panic isolation keeps working.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

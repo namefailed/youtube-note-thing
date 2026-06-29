@@ -100,6 +100,20 @@ describe("mergeTagSets (bidirectional tag sync)", () => {
     expect(m.toAttach).toEqual([]);
     expect(m.toDetach).toEqual([]);
   });
+  it("remote casing wins even when base and local differ too", () => {
+    const m = mergeTagSets(["LECTURE"], ["lecture"], ["Lecture"]);
+    expect(m.merged).toEqual(["Lecture"]);
+  });
+  it("trims and de-duplicates whitespace-variant tags", () => {
+    const m = mergeTagSets(null, ["  tag  ", "tag"], []);
+    expect(m.merged).toEqual(["tag"]);
+    expect(m.toAttach).toEqual(["tag"]); // not yet on Phoneme
+  });
+  it("detach of a remote-only tag preserves the remote casing", () => {
+    const m = mergeTagSets(["Foo"], [], ["FOO"]); // local removed it
+    expect(m.merged).toEqual([]);
+    expect(m.toDetach).toEqual(["FOO"]);
+  });
 });
 
 describe("parsePlaylistId", () => {
@@ -131,6 +145,15 @@ describe("parseVideoId", () => {
     expect(parseVideoId("https://vimeo.com/12345")).toBeNull();
     expect(parseVideoId("not a url")).toBeNull();
     expect(parseVideoId("")).toBeNull();
+  });
+  it("rejects host-confusion and malformed ids", () => {
+    // Look-alike host must not be treated as YouTube.
+    expect(parseVideoId(`https://www.youtube.com.evil.com/watch?v=${ID}`)).toBeNull();
+    // v= must be exactly 11 valid chars.
+    expect(parseVideoId("https://www.youtube.com/watch?v=short")).toBeNull();
+    expect(parseVideoId("https://www.youtube.com/watch?v=toolongvideoid")).toBeNull();
+    // Bare string of the right length but with a disallowed char.
+    expect(parseVideoId("dQw4w9WgX!Q")).toBeNull();
   });
 });
 

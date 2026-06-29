@@ -1,6 +1,6 @@
 # ⚙️ Settings reference
 
-Settings is where you tune how ytnt looks, when it captures a note, where backups and Markdown land, and which optional integrations (Phoneme, your YouTube account) are wired up. Everything here lives on **this device only** — preferences are kept in your browser's `localStorage` under the key `ytnt.settings`, alongside a couple of companion keys for tag colors and sync state. There's no cloud sync and no shared config file; copy a profile by hand if you need it on another machine.
+Settings is where you tune how ytnt looks, when it captures a note, where backups and Markdown land, and which optional integrations (Phoneme, your YouTube account) are wired up. Everything here lives on **this device only** — preferences are kept in your browser's `localStorage` under the key `ytnt.settings`, alongside a couple of companion keys for tag colors and sync state. There's no cloud sync and no shared config file — but a **JSON library backup** (below) bundles these settings and your tag colors, so an Export/Import is the easy way to move a profile to another machine.
 
 Open Settings from the **gear** button in the top bar. Every change saves the moment you make it — there's no Save button, and closing the dialog (the **×**, `Esc`, or clicking outside) keeps what you set.
 
@@ -80,11 +80,11 @@ Both settings shape the note-taking flow described in [Taking notes](taking_note
 
 **Library backup** is your full safety net:
 
-1. Click **Export JSON** to download a single `ytnt-backup.json` containing every video, note, tag, and link.
-2. To restore (or move to another machine), click **Import JSON** and choose a backup file.
+1. Click **Export JSON** to download a single `ytnt-backup.json` containing every video, note, tag, and link — **plus your settings and tag colors**, so a JSON export is a full profile transfer between machines, not just a library dump.
+2. To restore (or move to another machine), click **Import JSON** and choose a backup file. On import, the bundled settings and tag colors are applied immediately (no restart needed).
 
 > [!IMPORTANT]
-> Import **merges** the backup into your current library rather than wiping it. Keep periodic JSON exports — they capture data that lives in the database, which the in-app settings reset does **not** touch.
+> Import **merges** the library (videos/notes) into your current one rather than wiping it, and **overwrites** your settings and tag colors with the backup's. Keep periodic JSON exports — they capture the database (which the in-app settings reset does **not** touch) and your preferences in one file.
 
 More on exports, the vault, and Markdown formatting is in [Library & filters](library_and_filters.md).
 

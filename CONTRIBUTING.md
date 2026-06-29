@@ -79,17 +79,22 @@ cargo test             # Rust unit tests
 
 ## ✅ Pre-PR Checklist
 
-All three gates must pass before a change is mergeable:
+Run the same gates CI enforces — the commands below match `.github/workflows/ci.yml` exactly, including the `-D warnings` / `--check` flags (plain `cargo clippy`/`cargo fmt` pass locally but still fail CI):
 
 ```powershell
 npm run type-check     # no type errors
 npm test               # vitest green
+npm audit --audit-level high   # no high/critical advisories (CI: frontend job)
 cd src-tauri
-cargo check            # Rust compiles
-cargo test             # Rust tests green
-cargo fmt              # format Rust changes before committing
-cargo clippy           # lint Rust changes before committing
+cargo test --locked --manifest-path Cargo.toml                       # Rust tests green
+cargo clippy --locked --manifest-path Cargo.toml -- -D warnings      # lint, warnings are errors
+cargo fmt --manifest-path Cargo.toml --check                         # formatting must already be applied
 ```
+
+CI runs two more checks you don't need locally on every change but that can block a PR:
+
+- **rustsec/audit-check** — flags Rust advisories (`cargo audit`).
+- **Rustdoc gate** — `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`; a broken intra-doc link in a `///` comment fails it.
 
 For features that touch the player, OAuth, or Phoneme, also do a manual smoke test per [`docs/developer-guide/testing_and_verification.md`](docs/developer-guide/testing_and_verification.md). The full doc map is the [documentation index](docs/README.md).
 

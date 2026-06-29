@@ -176,7 +176,7 @@ fields, because nothing is checked at compile time.
 | `SearchHit` | `search_notes` | A note joined to its video title for the search list. |
 | `PlaylistItem` | `playlist_items` | Playlist row plus the computed `in_library` bool. |
 | `PlaylistRef` | `video_playlists` | The `(playlist_id, playlist_title, item_id)` triple used to remove a video from a playlist. |
-| `BackupVideo` / `BackupNote` / `Backup` | `export` / `import` | The JSON backup contract; `Backup` is `{ videos, notes }`. Import is `INSERT OR IGNORE`, so it never clobbers existing rows. |
+| `Backup` | `export` / `import` | The JSON backup contract — `{ videos: Vec<Video>, notes: Vec<Note> }` (reuses `Video`/`Note` directly). Import is `INSERT OR IGNORE`, so it never clobbers existing rows, and returns `ImportStats` (added/skipped per table). The frontend `ytnt-backup.json` also carries `settings` and `tagColors` keys (localStorage), which `import_json` ignores — they are restored in `app.ts`. |
 
 Two things to note when adding fields:
 

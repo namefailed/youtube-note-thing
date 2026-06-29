@@ -69,7 +69,7 @@ delegates to a `db.rs` method.
 | Command | Args | Returns | Does |
 | :--- | :--- | :--- | :--- |
 | `export_json` | — | `String` | Serialize all videos + notes to pretty JSON (the `Backup` shape). |
-| `import_json` | `json` | `()` | Parse a `Backup` and `INSERT OR IGNORE` it (never clobbers existing rows). |
+| `import_json` | `json` | `ImportStats` | Parse a `Backup` and `INSERT OR IGNORE` it (never clobbers existing rows); returns counts of added vs. skipped videos and notes. |
 | `save_markdown` | `dir`, `name`, `content` | `String` | Write a Markdown file to a user-chosen folder (e.g. an Obsidian vault); validates the dir exists and returns the written path. |
 
 `save_markdown` is the one core command that is **synchronous** (no `async`,
@@ -245,7 +245,8 @@ the `invoke` boundary; `FromRow` lets sqlx build them from a row.
 | `SearchHit` | `search_notes` | A note joined to its video's title for the search results list. |
 | `PlaylistItem` | `google_sync_playlist` | A cached playlist entry + an `in_library` flag. |
 | `PlaylistRef` | `video_playlists` | Which playlist a video is in + the `item_id` to remove it. |
-| `BackupVideo` / `BackupNote` / `Backup` | `export`/`import` | The JSON export shape (also `Deserialize`). |
+| `Backup` | `export`/`import` | The JSON export shape — `{ videos: Vec<Video>, notes: Vec<Note> }` (both reused directly; `Video`/`Note` derive `Deserialize`). |
+| `ImportStats` | `import_json` | Counts returned by import: `added_videos`, `skipped_videos`, `added_notes`, `skipped_notes`. |
 
 `tags` is a `Json<Vec<String>>` — sqlx stores/loads the JSON column transparently
 and it serializes to a plain string array on the wire.

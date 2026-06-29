@@ -143,9 +143,7 @@ impl Db {
         Ok(())
     }
 
-    /// Fill YouTube metadata for one video (from the Data API). NULL args leave
-    /// the existing value; an empty title keeps the current one too.
-    #[allow(clippy::too_many_arguments)]
+    /// Pin / unpin a video (pinned rows float to the top of the library).
     pub async fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE videos SET pinned = ? WHERE id = ?")
             .bind(pinned)
@@ -175,7 +173,12 @@ impl Db {
     }
 
     /// Replace the cached contents of one playlist. items = (video_id, item_id, title, position).
-    pub async fn sync_playlist(&self, playlist_id: &str, playlist_title: &str, items: &[(String, String, String, i64)]) -> Result<usize, sqlx::Error> {
+    pub async fn sync_playlist(
+        &self,
+        playlist_id: &str,
+        playlist_title: &str,
+        items: &[(String, String, String, i64)],
+    ) -> Result<usize, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ?")
             .bind(playlist_id)
@@ -196,7 +199,10 @@ impl Db {
         Ok(items.len())
     }
 
-    pub async fn playlist_items(&self, playlist_id: &str) -> Result<Vec<PlaylistItem>, sqlx::Error> {
+    pub async fn playlist_items(
+        &self,
+        playlist_id: &str,
+    ) -> Result<Vec<PlaylistItem>, sqlx::Error> {
         sqlx::query_as::<_, PlaylistItem>(
             "SELECT pi.video_id, pi.item_id, pi.title, pi.position, (v.id IS NOT NULL) AS in_library
              FROM playlist_items pi LEFT JOIN videos v ON v.id = pi.video_id
@@ -217,7 +223,11 @@ impl Db {
         .await
     }
 
-    pub async fn delete_playlist_item(&self, playlist_id: &str, video_id: &str) -> Result<(), sqlx::Error> {
+    pub async fn delete_playlist_item(
+        &self,
+        playlist_id: &str,
+        video_id: &str,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ? AND video_id = ?")
             .bind(playlist_id)
             .bind(video_id)
@@ -236,11 +246,18 @@ impl Db {
     }
 
     pub async fn delete_video(&self, id: &str) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // Notes cascade via FK; playlist_items has no FK to videos (migration 005),
+        // so clear its rows explicitly or they orphan and accumulate.
+        sqlx::query("DELETE FROM playlist_items WHERE video_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM videos WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-        Ok(())
+        tx.commit().await
     }
 
     pub async fn list_notes(&self, video_id: &str) -> Result<Vec<Note>, sqlx::Error> {
@@ -257,7 +274,12 @@ impl Db {
         .await
     }
 
-    pub async fn create_note(&self, video_id: &str, t_secs: f64, content: &str) -> Result<Note, sqlx::Error> {
+    pub async fn create_note(
+        &self,
+        video_id: &str,
+        t_secs: f64,
+        content: &str,
+    ) -> Result<Note, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         sqlx::query_as::<_, Note>(
             "INSERT INTO notes (id, video_id, t_secs, content, order_index)
@@ -290,7 +312,11 @@ impl Db {
         Ok(())
     }
 
-    pub async fn reorder_notes(&self, video_id: &str, ordered_ids: Vec<String>) -> Result<(), sqlx::Error> {
+    pub async fn reorder_notes(
+        &self,
+        video_id: &str,
+        ordered_ids: Vec<String>,
+    ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE videos SET manual_order = 1 WHERE id = ?")
             .bind(video_id)
@@ -372,7 +398,11 @@ impl Db {
             .bind(v.ext_ref.as_deref())
             .execute(&mut *tx)
             .await?;
-            if res.rows_affected() > 0 { added_videos += 1; } else { skipped_videos += 1; }
+            if res.rows_affected() > 0 {
+                added_videos += 1;
+            } else {
+                skipped_videos += 1;
+            }
         }
         let mut added_notes = 0usize;
         let mut skipped_notes = 0usize;
@@ -388,10 +418,19 @@ impl Db {
             .bind(n.order_index)
             .execute(&mut *tx)
             .await?;
-            if res.rows_affected() > 0 { added_notes += 1; } else { skipped_notes += 1; }
+            if res.rows_affected() > 0 {
+                added_notes += 1;
+            } else {
+                skipped_notes += 1;
+            }
         }
         tx.commit().await?;
-        Ok(ImportStats { added_videos, skipped_videos, added_notes, skipped_notes })
+        Ok(ImportStats {
+            added_videos,
+            skipped_videos,
+            added_notes,
+            skipped_notes,
+        })
     }
 }
 
@@ -422,7 +461,9 @@ mod tests {
         let src = test_db().await;
 
         // seed
-        src.upsert_video("vid1", "https://youtu.be/vid1").await.unwrap();
+        src.upsert_video("vid1", "https://youtu.be/vid1")
+            .await
+            .unwrap();
         let n1 = src.create_note("vid1", 1.0, "note alpha").await.unwrap();
         let n2 = src.create_note("vid1", 2.5, "note beta").await.unwrap();
 
@@ -478,5 +519,82 @@ mod tests {
             result.is_err(),
             "expected FK error when importing a note with no matching video"
         );
+    }
+
+    /// FTS quote-escaping must tolerate punctuation and embedded quotes without
+    /// raising an FTS5 syntax error.
+    #[tokio::test]
+    async fn search_notes_tolerates_punctuation_and_quotes() {
+        let db = test_db().await;
+        db.upsert_video("v", "https://youtu.be/v").await.unwrap();
+        db.create_note("v", 0.0, "the quick brown fox")
+            .await
+            .unwrap();
+
+        // Hyphen is a tokenizer boundary, so the phrase matches the adjacent words.
+        let hits = db.search_notes("brown-fox").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].content, "the quick brown fox");
+
+        // An embedded double-quote must be escaped, not raise an FTS syntax error.
+        assert!(db.search_notes("fox\"").await.is_ok());
+
+        // Whitespace-only query short-circuits to no hits.
+        assert!(db.search_notes("   ").await.unwrap().is_empty());
+    }
+
+    /// `import_playlist` returns only the count of newly-added rows (re-import of
+    /// an existing id is a no-op via INSERT OR IGNORE).
+    #[tokio::test]
+    async fn import_playlist_counts_only_new() {
+        let db = test_db().await;
+        let first = db
+            .import_playlist(&[("a".into(), "A".into()), ("b".into(), "B".into())])
+            .await
+            .unwrap();
+        assert_eq!(first, 2);
+        let second = db
+            .import_playlist(&[("a".into(), "A".into()), ("c".into(), "C".into())])
+            .await
+            .unwrap();
+        assert_eq!(second, 1, "only the new id counts on re-import");
+    }
+
+    /// `sync_playlist` caches items (with the in_library join), and `delete_video`
+    /// clears that video's playlist_items so nothing orphans.
+    #[tokio::test]
+    async fn sync_playlist_caches_and_delete_video_clears_items() {
+        let db = test_db().await;
+        db.upsert_video("vid", "https://youtu.be/vid")
+            .await
+            .unwrap();
+        db.sync_playlist(
+            "pl",
+            "My PL",
+            &[
+                ("vid".into(), "item1".into(), "Vid".into(), 0),
+                ("other".into(), "item2".into(), "Other".into(), 1),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let items = db.playlist_items("pl").await.unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().any(|i| i.video_id == "vid" && i.in_library));
+        assert!(items.iter().any(|i| i.video_id == "other" && !i.in_library));
+
+        let pls = db.video_playlists("vid").await.unwrap();
+        assert_eq!(pls.len(), 1);
+        assert_eq!(pls[0].playlist_id, "pl");
+
+        db.delete_video("vid").await.unwrap();
+        assert!(
+            db.video_playlists("vid").await.unwrap().is_empty(),
+            "playlist_items rows must be cleared on delete_video"
+        );
+        let remaining = db.playlist_items("pl").await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].video_id, "other");
     }
 }

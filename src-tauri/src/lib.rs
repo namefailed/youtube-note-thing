@@ -6,7 +6,7 @@ mod db;
 use db::{Backup, Db, ImportStats, Note, PlaylistItem, PlaylistRef, SearchHit, VideoWithCount};
 use std::io::Write;
 use std::net::TcpListener;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -17,11 +17,11 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 /// requests. Construct fresh per command (connection pooling is not needed at
 /// this call frequency); `phoneme_import` audio downloads get their own client
 /// with no timeout since download duration is unbounded.
-fn http_client() -> reqwest::Client {
+fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
-        .unwrap()
+        .map_err(|e| format!("HTTP client init failed: {e}"))
 }
 
 #[tauri::command]
@@ -70,8 +70,15 @@ async fn list_notes(db: State<'_, Db>, video_id: String) -> Result<Vec<Note>, St
 }
 
 #[tauri::command]
-async fn create_note(db: State<'_, Db>, video_id: String, t_secs: f64, content: String) -> Result<Note, String> {
-    db.create_note(&video_id, t_secs, &content).await.map_err(err)
+async fn create_note(
+    db: State<'_, Db>,
+    video_id: String,
+    t_secs: f64,
+    content: String,
+) -> Result<Note, String> {
+    db.create_note(&video_id, t_secs, &content)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -85,7 +92,11 @@ async fn delete_note(db: State<'_, Db>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn reorder_notes(db: State<'_, Db>, video_id: String, ordered_ids: Vec<String>) -> Result<(), String> {
+async fn reorder_notes(
+    db: State<'_, Db>,
+    video_id: String,
+    ordered_ids: Vec<String>,
+) -> Result<(), String> {
     db.reorder_notes(&video_id, ordered_ids).await.map_err(err)
 }
 
@@ -138,15 +149,21 @@ const INNERTUBE_API_KEY: &str = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Segment {
-    #[serde(default)] start_ms: i64,
-    #[serde(default)] end_ms: i64,
-    #[serde(default)] text: String,
-    #[serde(default)] speaker: Option<String>,
+    #[serde(default)]
+    start_ms: i64,
+    #[serde(default)]
+    end_ms: i64,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    speaker: Option<String>,
 }
 
 /// Is `exe` found in any PATH directory? Cheap (no process spawn).
 fn on_path(exe: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else { return false };
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
     let sep = if cfg!(windows) { ';' } else { ':' };
     path.split(sep)
         .any(|dir| !dir.is_empty() && std::path::Path::new(dir).join(exe).exists())
@@ -182,7 +199,11 @@ fn resolve_phoneme() -> String {
             return p.to_string();
         }
     }
-    let exe = if cfg!(windows) { "phoneme.exe" } else { "phoneme" };
+    let exe = if cfg!(windows) {
+        "phoneme.exe"
+    } else {
+        "phoneme"
+    };
     if on_path(exe) {
         return "phoneme".to_string();
     }
@@ -198,15 +219,59 @@ fn resolve_phoneme() -> String {
     "phoneme".to_string()
 }
 
+/// How long any single `phoneme` CLI invocation may run before we kill it. A
+/// wedged daemon must not hang the caller — for sync commands that means the
+/// main (UI) thread, so this bound is what keeps the window responsive.
+const PHONEME_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn run_phoneme(args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new(resolve_phoneme())
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(resolve_phoneme())
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Phoneme CLI not found ({e})"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    // Drain stdout/stderr on dedicated threads so a large response can't fill the
+    // OS pipe buffer and deadlock the child while we poll for exit.
+    let mut so = child.stdout.take().expect("piped stdout");
+    let mut se = child.stderr.take().expect("piped stderr");
+    let so_h = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = so.read_to_end(&mut b);
+        b
+    });
+    let se_h = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = se.read_to_end(&mut b);
+        b
+    });
+    let deadline = Instant::now() + PHONEME_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "Phoneme CLI timed out after {}s",
+                        PHONEME_TIMEOUT.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(format!("Phoneme CLI wait failed ({e})")),
+        }
+    };
+    let stdout = so_h.join().unwrap_or_default();
+    let stderr = se_h.join().unwrap_or_default();
+    if !status.success() {
+        return Err(String::from_utf8_lossy(&stderr).trim().to_string());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -220,8 +285,12 @@ struct PhonemeTag {
 /// ytnt can paint tag chips the same color Phoneme does — the two stay in sync
 /// on a shared tag. Empty when the daemon is down or Phoneme isn't installed.
 #[tauri::command]
-fn phoneme_tags() -> Vec<PhonemeTag> {
-    run_phoneme_json(&["tag", "list", "--all"]).unwrap_or_default()
+async fn phoneme_tags() -> Vec<PhonemeTag> {
+    tauri::async_runtime::spawn_blocking(|| {
+        run_phoneme_json(&["tag", "list", "--all"]).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Tags attached to ONE Phoneme recording — the pull side of membership sync.
@@ -229,48 +298,68 @@ fn phoneme_tags() -> Vec<PhonemeTag> {
 /// frontend never mistakes "couldn't reach Phoneme" for "no tags" and detaches
 /// everything.
 #[tauri::command]
-fn phoneme_tags_for(rec_id: String) -> Result<Vec<PhonemeTag>, String> {
-    run_phoneme_json(&["tag", "for", &rec_id])
+async fn phoneme_tags_for(rec_id: String) -> Result<Vec<PhonemeTag>, String> {
+    tauri::async_runtime::spawn_blocking(move || run_phoneme_json(&["tag", "for", "--", &rec_id]))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Push membership changes for one recording: create-if-missing (with the
 /// supplied color), then attach/detach by name. Any attach/detach failure
 /// propagates so the change stays pending instead of being marked synced.
 #[tauri::command]
-fn phoneme_apply_tags(
+async fn phoneme_apply_tags(
     rec_id: String,
     add: Vec<String>,
     remove: Vec<String>,
     colors: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
-    for name in &add {
-        // Best-effort create — a no-op/error if the tag already exists; the
-        // attach below resolves it by name either way.
-        match colors.get(name) {
-            Some(c) => { let _ = run_phoneme(&["tag", "add", name, "--color", c]); }
-            None => { let _ = run_phoneme(&["tag", "add", name]); }
+    tauri::async_runtime::spawn_blocking(move || {
+        for name in &add {
+            // Best-effort create — a no-op/error if the tag already exists; the
+            // attach below resolves it by name either way. `--` guards a tag named
+            // like a flag (e.g. `--color`) from being reparsed as one.
+            match colors.get(name) {
+                Some(c) => {
+                    let _ = run_phoneme(&["tag", "add", "--color", c, "--", name]);
+                }
+                None => {
+                    let _ = run_phoneme(&["tag", "add", "--", name]);
+                }
+            }
+            run_phoneme(&["tag", "attach", "--", &rec_id, name])?;
         }
-        run_phoneme(&["tag", "attach", &rec_id, name])?;
-    }
-    for name in &remove {
-        run_phoneme(&["tag", "detach", &rec_id, name])?;
-    }
-    Ok(())
+        for name in &remove {
+            run_phoneme(&["tag", "detach", "--", &rec_id, name])?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Rename (and optionally recolor) a Phoneme catalog tag globally — keeps its id
 /// and every attachment, so renaming from ytnt doesn't orphan the old tag.
 #[tauri::command]
-fn phoneme_update_tag(id: i64, name: String, color: Option<String>) -> Result<(), String> {
-    let id = id.to_string();
-    let mut args = vec!["tag", "update", id.as_str(), name.as_str()];
-    if let Some(c) = color.as_deref() {
-        if !c.is_empty() {
-            args.push("--color");
-            args.push(c);
+async fn phoneme_update_tag(id: i64, name: String, color: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let id = id.to_string();
+        // Options before `--`, then the positionals (id, name) — so a tag renamed
+        // to something flag-like can't be reparsed as an option.
+        let mut args = vec!["tag", "update"];
+        if let Some(c) = color.as_deref() {
+            if !c.is_empty() {
+                args.push("--color");
+                args.push(c);
+            }
         }
-    }
-    run_phoneme(&args).map(|_| ())
+        args.push("--");
+        args.push(id.as_str());
+        args.push(name.as_str());
+        run_phoneme(&args).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Run `phoneme --json <args>` and deserialize stdout into `T` — the typed
@@ -286,8 +375,10 @@ fn run_phoneme_json<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<T, 
 /// Start Phoneme's background daemon (`phoneme daemon start` — spawns it detached
 /// and returns immediately). Used by the "daemon not responding → start it" path.
 #[tauri::command]
-fn phoneme_daemon_start() -> Result<(), String> {
-    run_phoneme(&["daemon", "start"]).map(|_| ())
+async fn phoneme_daemon_start() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| run_phoneme(&["daemon", "start"]).map(|_| ()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The lowest Phoneme version whose `--json` / CLI contract ytnt was built
@@ -324,33 +415,40 @@ struct PhonemeProbe {
 /// dies (or starts) mid-session is reflected live, and an incompatible install
 /// degrades loudly instead of showing blank panels.
 #[tauri::command]
-fn phoneme_probe() -> PhonemeProbe {
-    let phoneme = resolve_phoneme();
-    let version_out = std::process::Command::new(&phoneme)
-        .arg("version")
-        .output();
-    let (present, version) = match &version_out {
-        Ok(o) if o.status.success() => (
-            true,
-            String::from_utf8_lossy(&o.stdout)
-                .split_whitespace()
-                .last()
-                .unwrap_or("")
-                .to_string(),
-        ),
-        _ => (false, String::new()),
-    };
-    // Unknown version (e.g. a build without `version`) is treated as compatible
-    // rather than locking the user out; a parseable-but-old one degrades loudly.
-    let compatible = parse_phoneme_version(&version)
-        .map(|v| v >= MIN_PHONEME_VERSION)
-        .unwrap_or(true);
-    let daemon_ok = present && std::process::Command::new(&phoneme)
-        .args(["--json", "list", "--limit", "1"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    PhonemeProbe { present, daemon_ok, version, compatible, path: phoneme }
+async fn phoneme_probe() -> PhonemeProbe {
+    tauri::async_runtime::spawn_blocking(|| {
+        let phoneme = resolve_phoneme();
+        // Both checks go through run_phoneme so they inherit the wall-clock
+        // timeout — a wedged daemon can't stall this 15s-polled probe (and, since
+        // the command is now async + spawn_blocking, never the main thread).
+        let ver_out = run_phoneme(&["version"]);
+        let present = ver_out.is_ok();
+        let version = ver_out
+            .ok()
+            .and_then(|o| o.split_whitespace().last().map(|s| s.to_string()))
+            .unwrap_or_default();
+        // Unknown version (e.g. a build without `version`) is treated as compatible
+        // rather than locking the user out; a parseable-but-old one degrades loudly.
+        let compatible = parse_phoneme_version(&version)
+            .map(|v| v >= MIN_PHONEME_VERSION)
+            .unwrap_or(true);
+        let daemon_ok = present && run_phoneme(&["--json", "list", "--limit", "1"]).is_ok();
+        PhonemeProbe {
+            present,
+            daemon_ok,
+            version,
+            compatible,
+            path: phoneme,
+        }
+    })
+    .await
+    .unwrap_or(PhonemeProbe {
+        present: false,
+        daemon_ok: false,
+        version: String::new(),
+        compatible: true,
+        path: String::new(),
+    })
 }
 
 /// Hand a YouTube URL to Phoneme (downloads audio + queues transcription).
@@ -359,16 +457,21 @@ fn phoneme_probe() -> PhonemeProbe {
 #[tauri::command]
 async fn phoneme_import(url: String, recipe: Option<String>) -> Result<String, String> {
     #[derive(serde::Deserialize)]
-    struct ImportResult { id: String }
+    struct ImportResult {
+        id: String,
+    }
     let result = tauri::async_runtime::spawn_blocking(move || {
         let recipe = recipe.unwrap_or_default();
         let recipe = recipe.trim();
-        let mut args: Vec<&str> = vec!["import", &url];
+        let mut args: Vec<&str> = vec!["import"];
         // Empty / "default" ⇒ no override (Phoneme runs the default pipeline).
         if !recipe.is_empty() && recipe != "default" {
             args.push("--recipe");
             args.push(recipe);
         }
+        // `--` so a URL that looks like a flag can't be reparsed as one.
+        args.push("--");
+        args.push(&url);
         run_phoneme_json::<ImportResult>(&args)
     })
     .await
@@ -395,8 +498,10 @@ struct PhonemeRecipe {
 /// The Playbook recipes the user has configured in Phoneme, so ytnt can offer a
 /// transcription-pipeline picker. Empty when the daemon/CLI isn't reachable.
 #[tauri::command]
-fn phoneme_recipes() -> Vec<PhonemeRecipe> {
-    run_phoneme_json(&["recipes"]).unwrap_or_default()
+async fn phoneme_recipes() -> Vec<PhonemeRecipe> {
+    tauri::async_runtime::spawn_blocking(|| run_phoneme_json(&["recipes"]).unwrap_or_default())
+        .await
+        .unwrap_or_default()
 }
 
 #[derive(serde::Deserialize)]
@@ -430,7 +535,10 @@ async fn phoneme_find_recording(video_id: String) -> Option<String> {
 /// line. Errors only when there WAS output but nothing parsed — a sign the
 /// contract drifted — so callers can surface a quiet notice instead of a blank
 /// panel. Genuinely empty output (nothing transcribed yet) is an empty Vec, OK.
-fn parse_json_lines<T: serde::de::DeserializeOwned>(out: &str, what: &str) -> Result<Vec<T>, String> {
+fn parse_json_lines<T: serde::de::DeserializeOwned>(
+    out: &str,
+    what: &str,
+) -> Result<Vec<T>, String> {
     let mut items = Vec::new();
     let mut seen = 0usize;
     for line in out.lines() {
@@ -454,26 +562,38 @@ fn parse_json_lines<T: serde::de::DeserializeOwned>(out: &str, what: &str) -> Re
 
 /// Fetch a recording's transcript segments (empty while still transcribing).
 #[tauri::command]
-fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
-    let out = run_phoneme(&["--json", "show", &id, "--segments"])?;
-    parse_json_lines(&out, "segments")
+async fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = run_phoneme(&["--json", "show", "--segments", "--", &id])?;
+        parse_json_lines(&out, "segments")
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Chapter {
-    #[serde(default)] start_ms: i64,
-    #[serde(default)] end_ms: i64,
-    #[serde(default)] title: String,
-    #[serde(default)] summary: Option<String>,
+    #[serde(default)]
+    start_ms: i64,
+    #[serde(default)]
+    end_ms: i64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    summary: Option<String>,
 }
 
 /// A recording's stored auto-chapters (read-only: `--show` never triggers the
 /// LLM chapter-generation step, so this is a passive view). Empty when the
 /// recording has no chapters — a normal state, not an error.
 #[tauri::command]
-fn phoneme_chapters(id: String) -> Result<Vec<Chapter>, String> {
-    let out = run_phoneme(&["--json", "chapters", &id, "--show"])?;
-    parse_json_lines(&out, "chapters")
+async fn phoneme_chapters(id: String) -> Result<Vec<Chapter>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = run_phoneme(&["--json", "chapters", "--show", "--", &id])?;
+        parse_json_lines(&out, "chapters")
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(serde::Serialize)]
@@ -485,11 +605,17 @@ struct PhonemeHit {
 
 /// Semantic search across the whole Phoneme archive (best-effort, via the CLI).
 #[tauri::command]
-fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
+async fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
     if query.trim().is_empty() {
         return Ok(vec![]);
     }
-    let out = run_phoneme(&["--json", "search", &query, "--limit", "10"])?;
+    tauri::async_runtime::spawn_blocking(move || phoneme_search_blocking(&query))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn phoneme_search_blocking(query: &str) -> Result<Vec<PhonemeHit>, String> {
+    let out = run_phoneme(&["--json", "search", "--limit", "10", "--", query])?;
     // parse_json_lines errors when there IS output but nothing parsed (contract drift).
     let rows = parse_json_lines::<serde_json::Value>(&out, "search")?;
     let hits = rows
@@ -497,11 +623,19 @@ fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
         .filter_map(|v| {
             // Phoneme may wrap the hit in a `recording` field or return it flat.
             let rec = v.get("recording").cloned().unwrap_or(v);
-            let id = rec.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            let id = rec
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
             if id.is_empty() {
                 return None;
             }
-            let title = rec.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            let title = rec
+                .get("title")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
             let snippet: String = rec
                 .get("summary")
                 .and_then(|x| x.as_str())
@@ -538,7 +672,8 @@ fn phoneme_pipe_path() -> Option<String> {
 fn phoneme_ipc(req: serde_json::Value) -> Result<serde_json::Value, String> {
     use std::io::{BufRead, BufReader, Write};
     let path = phoneme_pipe_path().ok_or_else(|| {
-        "This feature needs Phoneme's daemon pipe, which is only available on Windows for now.".to_string()
+        "This feature needs Phoneme's daemon pipe, which is only available on Windows for now."
+            .to_string()
     })?;
     let mut pipe = std::fs::OpenOptions::new()
         .read(true)
@@ -548,9 +683,19 @@ fn phoneme_ipc(req: serde_json::Value) -> Result<serde_json::Value, String> {
     let line = serde_json::to_string(&req).map_err(err)? + "\n";
     pipe.write_all(line.as_bytes()).map_err(err)?;
     pipe.flush().ok();
-    let mut reader = BufReader::new(pipe);
-    let mut resp = String::new();
-    reader.read_line(&mut resp).map_err(err)?;
+    // Bounded read: a daemon that accepts the pipe but never replies must not block
+    // forever — std::fs::File honors no read timeout on a Windows named pipe, so we
+    // read on a throwaway thread and give up after 10s.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        let mut resp = String::new();
+        let _ = tx.send(reader.read_line(&mut resp).map(|_| resp));
+    });
+    let resp = rx
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|_| "Phoneme daemon did not respond in time".to_string())?
+        .map_err(err)?;
     let v: serde_json::Value = serde_json::from_str(resp.trim()).map_err(err)?;
     match v.get("status").and_then(|s| s.as_str()) {
         Some("ok") => Ok(v.get("value").cloned().unwrap_or(serde_json::Value::Null)),
@@ -563,9 +708,15 @@ fn phoneme_ipc(req: serde_json::Value) -> Result<serde_json::Value, String> {
 }
 
 #[derive(serde::Serialize)]
-struct PhonemeEntity { kind: String, value: String }
+struct PhonemeEntity {
+    kind: String,
+    value: String,
+}
 #[derive(serde::Serialize)]
-struct PhonemeTask { text: String, done: bool }
+struct PhonemeTask {
+    text: String,
+    done: bool,
+}
 #[derive(serde::Serialize)]
 struct PhonemeRec {
     status: String,
@@ -581,8 +732,14 @@ struct PhonemeRec {
 
 /// Full recording row (status to poll + summary / entities / tasks / metadata).
 #[tauri::command]
-fn phoneme_recording(id: String) -> Result<PhonemeRec, String> {
-    let out = run_phoneme(&["--json", "show", &id])?;
+async fn phoneme_recording(id: String) -> Result<PhonemeRec, String> {
+    tauri::async_runtime::spawn_blocking(move || phoneme_recording_blocking(&id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn phoneme_recording_blocking(id: &str) -> Result<PhonemeRec, String> {
+    let out = run_phoneme(&["--json", "show", "--", id])?;
     let v: serde_json::Value = serde_json::from_str(out.trim()).map_err(err)?;
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     let entities = v
@@ -591,8 +748,16 @@ fn phoneme_recording(id: String) -> Result<PhonemeRec, String> {
         .map(|arr| {
             arr.iter()
                 .map(|e| PhonemeEntity {
-                    kind: e.get("kind").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                    value: e.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    kind: e
+                        .get("kind")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    value: e
+                        .get("value")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 })
                 .collect()
         })
@@ -603,7 +768,11 @@ fn phoneme_recording(id: String) -> Result<PhonemeRec, String> {
         .map(|arr| {
             arr.iter()
                 .map(|t| PhonemeTask {
-                    text: t.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    text: t
+                        .get("text")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     done: t.get("done").and_then(|x| x.as_bool()).unwrap_or(false),
                 })
                 .collect()
@@ -639,7 +808,7 @@ const PHONEME_REST_BASE: &str = "http://127.0.0.1:3737";
 /// Best-effort GET against phoneme-rest, parsed as JSON. `Err` when REST is off /
 /// unreachable / non-2xx — callers fall back to the pipe or degrade.
 async fn phoneme_rest_get(path: &str) -> Result<serde_json::Value, String> {
-    let resp = http_client()
+    let resp = http_client()?
         .get(format!("{PHONEME_REST_BASE}{path}"))
         .send()
         .await
@@ -659,12 +828,26 @@ fn parse_versions(arr: &[serde_json::Value]) -> Vec<TranscriptVersion> {
                 .and_then(|x| x.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| if idx == 0 { "Raw (ASR)".into() } else { format!("Step {idx}") });
+                .unwrap_or_else(|| {
+                    if idx == 0 {
+                        "Raw (ASR)".into()
+                    } else {
+                        format!("Step {idx}")
+                    }
+                });
             TranscriptVersion {
                 idx,
                 label,
-                model: v.get("model").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                model: v
+                    .get("model")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                text: v
+                    .get("text")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             }
         })
         .collect()
@@ -678,8 +861,10 @@ fn parse_versions(arr: &[serde_json::Value]) -> Vec<TranscriptVersion> {
 async fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> {
     // CLI first — needs no opt-in REST and no OS-specific pipe.
     let cli_id = id.clone();
-    if let Ok(Ok(out)) =
-        tauri::async_runtime::spawn_blocking(move || run_phoneme(&["--json", "versions", &cli_id])).await
+    if let Ok(Ok(out)) = tauri::async_runtime::spawn_blocking(move || {
+        run_phoneme(&["--json", "versions", "--", &cli_id])
+    })
+    .await
     {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(out.trim()) {
             if let Some(arr) = v.as_array() {
@@ -694,8 +879,14 @@ async fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> 
         }
     }
     // Last resort: the daemon named pipe. Off-Windows with REST off + the CLI
-    // unavailable, this returns the "only on Windows for now" notice.
-    let val = phoneme_ipc(serde_json::json!({ "type": "list_transcript_versions", "id": id }))?;
+    // unavailable, this returns the "only on Windows for now" notice. Run on a
+    // blocking thread so the bounded-but-still-blocking pipe read (phoneme_ipc)
+    // can't park a tokio worker.
+    let val = tauri::async_runtime::spawn_blocking(move || {
+        phoneme_ipc(serde_json::json!({ "type": "list_transcript_versions", "id": id }))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let arr = val.as_array().cloned().unwrap_or_default();
     Ok(parse_versions(&arr))
 }
@@ -726,7 +917,9 @@ fn phoneme_watch_start(app: AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("couldn't start `phoneme watch` ({e})"))?;
     let stdout = child.stdout.take().ok_or("phoneme watch: no stdout")?;
-    *WATCH_CHILD.lock().unwrap() = Some(child);
+    if let Ok(mut g) = WATCH_CHILD.lock() {
+        *g = Some(child);
+    }
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
@@ -771,7 +964,9 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
         "videoId": video_id,
     });
     let player: serde_json::Value = client
-        .post(format!("https://www.youtube.com/youtubei/v1/player?key={INNERTUBE_API_KEY}"))
+        .post(format!(
+            "https://www.youtube.com/youtubei/v1/player?key={INNERTUBE_API_KEY}"
+        ))
         .json(&body)
         .send()
         .await
@@ -801,7 +996,12 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
     {
         let parsed = url::Url::parse(base).map_err(|e| format!("Bad caption URL: {e}"))?;
         let host = parsed.host_str().unwrap_or("");
-        if parsed.scheme() != "https" || (!host.ends_with("youtube.com") && !host.ends_with("googlevideo.com")) {
+        // Anchor on a dot boundary so look-alikes (evilyoutube.com) don't match.
+        let host_ok = host == "youtube.com"
+            || host.ends_with(".youtube.com")
+            || host == "googlevideo.com"
+            || host.ends_with(".googlevideo.com");
+        if parsed.scheme() != "https" || !host_ok {
             return Err(format!("Caption URL has unexpected host/scheme: {base}"));
         }
     }
@@ -831,7 +1031,12 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
             if text.is_empty() {
                 continue;
             }
-            segs.push(Segment { start_ms: start, end_ms: start + dur, text, speaker: None });
+            segs.push(Segment {
+                start_ms: start,
+                end_ms: start + dur,
+                text,
+                speaker: None,
+            });
         }
     }
     if segs.is_empty() {
@@ -883,7 +1088,9 @@ async fn import_youtube_playlist(db: State<'_, Db>, playlist_id: String) -> Resu
         "browseId": format!("VL{playlist_id}"),
     });
     let v: serde_json::Value = client
-        .post(format!("https://www.youtube.com/youtubei/v1/browse?key={INNERTUBE_API_KEY}"))
+        .post(format!(
+            "https://www.youtube.com/youtubei/v1/browse?key={INNERTUBE_API_KEY}"
+        ))
         .json(&body)
         .send()
         .await
@@ -932,10 +1139,21 @@ fn default_google() -> (&'static str, &'static str) {
 /// Use the caller's creds if given, else fall back to the compiled-in defaults.
 fn resolve_creds(id: String, secret: String) -> Result<(String, String), String> {
     let (did, dsec) = default_google();
-    let id = if id.trim().is_empty() { did.to_string() } else { id };
-    let secret = if secret.trim().is_empty() { dsec.to_string() } else { secret };
+    let id = if id.trim().is_empty() {
+        did.to_string()
+    } else {
+        id
+    };
+    let secret = if secret.trim().is_empty() {
+        dsec.to_string()
+    } else {
+        secret
+    };
     if id.is_empty() || secret.is_empty() {
-        return Err("No Google credentials — connect with the built-in client or add your own in Settings.".into());
+        return Err(
+            "No Google credentials — connect with the built-in client or add your own in Settings."
+                .into(),
+        );
     }
     Ok((id, secret))
 }
@@ -947,12 +1165,17 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 fn tokens_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
     Ok(dir.join("google_tokens.json"))
 }
 fn load_tokens(app: &AppHandle) -> Option<GoogleTokens> {
     let p = tokens_path(app).ok()?;
-    std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
 }
 fn save_tokens(app: &AppHandle, t: &GoogleTokens) -> Result<(), String> {
     let p = tokens_path(app)?;
@@ -962,11 +1185,16 @@ fn save_tokens(app: &AppHandle, t: &GoogleTokens) -> Result<(), String> {
     std::fs::write(p, serde_json::to_string(t).map_err(err)?).map_err(err)
 }
 
-/// Block until the OAuth redirect hits our loopback listener, then return the code.
-fn wait_for_code(listener: TcpListener) -> Result<String, String> {
+/// Block until the OAuth redirect hits our loopback listener, then return the
+/// code. The redirect's `state` must match `expected_state` (RFC 8252 §8.9) —
+/// otherwise a same-machine process that wins the race to the loopback port could
+/// inject its own code and bind ytnt to the attacker's account.
+fn wait_for_code(listener: TcpListener, expected_state: &str) -> Result<String, String> {
     use std::io::BufRead as _;
     let (mut stream, _) = listener.accept().map_err(err)?;
-    stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(err)?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(err)?;
     // Read lines until the blank header boundary (handles TCP fragmentation).
     // Scope the BufReader so it drops before the write below.
     let first_line = {
@@ -992,6 +1220,13 @@ fn wait_for_code(listener: TcpListener) -> Result<String, String> {
     let _ = stream.write_all(resp.as_bytes());
     let full = format!("http://localhost{path}");
     let parsed = url::Url::parse(&full).map_err(err)?;
+    let got_state = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.into_owned());
+    if got_state.as_deref() != Some(expected_state) {
+        return Err("OAuth state mismatch — ignoring the redirect for security.".into());
+    }
     parsed
         .query_pairs()
         .find(|(k, _)| k == "code")
@@ -999,8 +1234,13 @@ fn wait_for_code(listener: TcpListener) -> Result<String, String> {
         .ok_or_else(|| "No authorization code in the redirect (consent denied?)".into())
 }
 
-async fn exchange_code(cid: &str, secret: &str, code: &str, redirect: &str) -> Result<GoogleTokens, String> {
-    let res: serde_json::Value = http_client()
+async fn exchange_code(
+    cid: &str,
+    secret: &str,
+    code: &str,
+    redirect: &str,
+) -> Result<GoogleTokens, String> {
+    let res: serde_json::Value = http_client()?
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("code", code),
@@ -1015,12 +1255,33 @@ async fn exchange_code(cid: &str, secret: &str, code: &str, redirect: &str) -> R
         .json()
         .await
         .map_err(err)?;
-    let access = res.get("access_token").and_then(|x| x.as_str())
-        .ok_or_else(|| format!("Token exchange failed: {}", res.get("error_description").or_else(|| res.get("error")).and_then(|x| x.as_str()).unwrap_or("unknown")))?
+    let access = res
+        .get("access_token")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| {
+            format!(
+                "Token exchange failed: {}",
+                res.get("error_description")
+                    .or_else(|| res.get("error"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("unknown")
+            )
+        })?
         .to_string();
-    let refresh = res.get("refresh_token").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let expires_in = res.get("expires_in").and_then(|x| x.as_i64()).unwrap_or(3600);
-    Ok(GoogleTokens { access_token: access, refresh_token: refresh, expires_at: now_secs() + expires_in })
+    let refresh = res
+        .get("refresh_token")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let expires_in = res
+        .get("expires_in")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(3600);
+    Ok(GoogleTokens {
+        access_token: access,
+        refresh_token: refresh,
+        expires_at: now_secs() + expires_in,
+    })
 }
 
 /// A non-expired access token, refreshing via the stored refresh token if needed.
@@ -1033,7 +1294,7 @@ async fn valid_access_token(app: &AppHandle, cid: &str, secret: &str) -> Result<
         return Err("Session expired — reconnect your Google account".into());
     }
     let (cid, secret) = resolve_creds(cid.to_string(), secret.to_string())?;
-    let res: serde_json::Value = http_client()
+    let res: serde_json::Value = http_client()?
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("client_id", cid.as_str()),
@@ -1047,10 +1308,15 @@ async fn valid_access_token(app: &AppHandle, cid: &str, secret: &str) -> Result<
         .json()
         .await
         .map_err(err)?;
-    let access = res.get("access_token").and_then(|x| x.as_str())
+    let access = res
+        .get("access_token")
+        .and_then(|x| x.as_str())
         .ok_or("Token refresh failed — reconnect your Google account")?
         .to_string();
-    let expires_in = res.get("expires_in").and_then(|x| x.as_i64()).unwrap_or(3600);
+    let expires_in = res
+        .get("expires_in")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(3600);
     t.access_token = access.clone();
     t.expires_at = now_secs() + expires_in;
     save_tokens(app, &t)?;
@@ -1059,7 +1325,9 @@ async fn valid_access_token(app: &AppHandle, cid: &str, secret: &str) -> Result<
 
 #[tauri::command]
 fn google_status(app: AppHandle) -> bool {
-    load_tokens(&app).map(|t| !t.refresh_token.is_empty()).unwrap_or(false)
+    load_tokens(&app)
+        .map(|t| !t.refresh_token.is_empty())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -1078,12 +1346,19 @@ fn google_logout(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn google_connect(app: AppHandle, client_id: String, client_secret: String) -> Result<(), String> {
+async fn google_connect(
+    app: AppHandle,
+    client_id: String,
+    client_secret: String,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let (client_id, client_secret) = resolve_creds(client_id, client_secret)?;
     let listener = TcpListener::bind("127.0.0.1:0").map_err(err)?;
     let port = listener.local_addr().map_err(err)?.port();
     let redirect = format!("http://127.0.0.1:{port}");
+    // CSRF guard for the loopback flow (RFC 8252 §8.9): a random state we require
+    // back on the redirect, so another local process can't inject its own code.
+    let state = uuid::Uuid::new_v4().to_string();
     let mut auth = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").map_err(err)?;
     auth.query_pairs_mut()
         .append_pair("response_type", "code")
@@ -1091,9 +1366,12 @@ async fn google_connect(app: AppHandle, client_id: String, client_secret: String
         .append_pair("prompt", "consent")
         .append_pair("client_id", &client_id)
         .append_pair("redirect_uri", &redirect)
-        .append_pair("scope", "https://www.googleapis.com/auth/youtube");
-    app.opener().open_url(auth.to_string(), None::<&str>).map_err(err)?;
-    let code = tauri::async_runtime::spawn_blocking(move || wait_for_code(listener))
+        .append_pair("scope", "https://www.googleapis.com/auth/youtube")
+        .append_pair("state", &state);
+    app.opener()
+        .open_url(auth.to_string(), None::<&str>)
+        .map_err(err)?;
+    let code = tauri::async_runtime::spawn_blocking(move || wait_for_code(listener, &state))
         .await
         .map_err(err)??;
     let tokens = exchange_code(&client_id, &client_secret, &code, &redirect).await?;
@@ -1155,12 +1433,15 @@ async fn sync_video_meta(
         return Ok(());
     }
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = http_client();
+    let client = http_client()?;
     for chunk in ids.chunks(50) {
         let id_param = chunk.join(",");
         let res: serde_json::Value = client
             .get("https://www.googleapis.com/youtube/v3/videos")
-            .query(&[("part", "snippet,statistics,contentDetails"), ("id", id_param.as_str())])
+            .query(&[
+                ("part", "snippet,statistics,contentDetails"),
+                ("id", id_param.as_str()),
+            ])
             .bearer_auth(&token)
             .send()
             .await
@@ -1214,11 +1495,19 @@ async fn sync_video_meta(
 }
 
 #[tauri::command]
-async fn google_playlists(app: AppHandle, client_id: String, client_secret: String) -> Result<Vec<GPlaylist>, String> {
+async fn google_playlists(
+    app: AppHandle,
+    client_id: String,
+    client_secret: String,
+) -> Result<Vec<GPlaylist>, String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let res: serde_json::Value = http_client()
+    let res: serde_json::Value = http_client()?
         .get("https://www.googleapis.com/youtube/v3/playlists")
-        .query(&[("part", "snippet,contentDetails"), ("mine", "true"), ("maxResults", "50")])
+        .query(&[
+            ("part", "snippet,contentDetails"),
+            ("mine", "true"),
+            ("maxResults", "50"),
+        ])
         .bearer_auth(&token)
         .send()
         .await
@@ -1229,14 +1518,25 @@ async fn google_playlists(app: AppHandle, client_id: String, client_secret: Stri
     let mut out = Vec::new();
     if let Some(items) = res.get("items").and_then(|x| x.as_array()) {
         for it in items {
-            let id = it.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let id = it
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             if id.is_empty() {
                 continue;
             }
             out.push(GPlaylist {
                 id,
-                title: it.pointer("/snippet/title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                count: it.pointer("/contentDetails/itemCount").and_then(|x| x.as_i64()).unwrap_or(0),
+                title: it
+                    .pointer("/snippet/title")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                count: it
+                    .pointer("/contentDetails/itemCount")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0),
             });
         }
     } else if let Some(e) = res.pointer("/error/message").and_then(|x| x.as_str()) {
@@ -1254,7 +1554,7 @@ async fn import_google_playlist(
     playlist_id: String,
 ) -> Result<usize, String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = http_client();
+    let client = http_client()?;
     let mut vids: Vec<(String, String)> = Vec::new();
     let mut page = String::new();
     loop {
@@ -1278,9 +1578,15 @@ async fn import_google_playlist(
             .map_err(err)?;
         if let Some(items) = res.get("items").and_then(|x| x.as_array()) {
             for it in items {
-                let vid = it.pointer("/snippet/resourceId/videoId").and_then(|x| x.as_str()).unwrap_or("");
+                let vid = it
+                    .pointer("/snippet/resourceId/videoId")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
                 if !vid.is_empty() {
-                    let title = it.pointer("/snippet/title").and_then(|x| x.as_str()).unwrap_or("");
+                    let title = it
+                        .pointer("/snippet/title")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
                     vids.push((vid.to_string(), title.to_string()));
                 }
             }
@@ -1305,7 +1611,7 @@ async fn google_sync_playlist(
     playlist_title: String,
 ) -> Result<Vec<PlaylistItem>, String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = http_client();
+    let client = http_client()?;
     let mut items: Vec<(String, String, String, i64)> = Vec::new();
     let mut page = String::new();
     loop {
@@ -1321,17 +1627,30 @@ async fn google_sync_playlist(
             .get("https://www.googleapis.com/youtube/v3/playlistItems")
             .query(&q)
             .bearer_auth(&token)
-            .send().await.map_err(err)?
-            .json().await.map_err(err)?;
+            .send()
+            .await
+            .map_err(err)?
+            .json()
+            .await
+            .map_err(err)?;
         if let Some(arr) = res.get("items").and_then(|x| x.as_array()) {
             for it in arr {
-                let vid = it.pointer("/snippet/resourceId/videoId").and_then(|x| x.as_str()).unwrap_or("");
+                let vid = it
+                    .pointer("/snippet/resourceId/videoId")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
                 if vid.is_empty() {
                     continue;
                 }
                 let item_id = it.get("id").and_then(|x| x.as_str()).unwrap_or("");
-                let title = it.pointer("/snippet/title").and_then(|x| x.as_str()).unwrap_or("");
-                let pos = it.pointer("/snippet/position").and_then(|x| x.as_i64()).unwrap_or(items.len() as i64);
+                let title = it
+                    .pointer("/snippet/title")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                let pos = it
+                    .pointer("/snippet/position")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(items.len() as i64);
                 items.push((vid.to_string(), item_id.to_string(), title.to_string(), pos));
             }
         } else if let Some(e) = res.pointer("/error/message").and_then(|x| x.as_str()) {
@@ -1342,7 +1661,9 @@ async fn google_sync_playlist(
             None => break,
         }
     }
-    db.sync_playlist(&playlist_id, &playlist_title, &items).await.map_err(err)?;
+    db.sync_playlist(&playlist_id, &playlist_title, &items)
+        .await
+        .map_err(err)?;
     db.playlist_items(&playlist_id).await.map_err(err)
 }
 
@@ -1359,7 +1680,7 @@ async fn google_remove_playlist_item(
     item_id: String,
 ) -> Result<(), String> {
     let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let res = http_client()
+    let res = http_client()?
         .delete("https://www.googleapis.com/youtube/v3/playlistItems")
         .query(&[("id", item_id.as_str())])
         .bearer_auth(&token)
@@ -1377,7 +1698,9 @@ async fn google_remove_playlist_item(
         }
         return Err(format!("Couldn't remove from playlist: {body}"));
     }
-    db.delete_playlist_item(&playlist_id, &video_id).await.map_err(err)
+    db.delete_playlist_item(&playlist_id, &video_id)
+        .await
+        .map_err(err)
 }
 
 /// Which synced playlists a video is in (with the item id needed to remove it).
@@ -1413,7 +1736,10 @@ pub fn run() {
                     .fetch_one(&pool)
                     .await?;
                 if row.0 != "ok" {
-                    return Err(sqlx::Error::Protocol(format!("Database integrity check failed: {}", row.0)));
+                    return Err(sqlx::Error::Protocol(format!(
+                        "Database integrity check failed: {}",
+                        row.0
+                    )));
                 }
                 Ok::<Db, sqlx::Error>(Db { pool })
             })

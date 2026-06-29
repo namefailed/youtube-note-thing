@@ -193,17 +193,18 @@ export class App extends LitElement {
     if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") this.keyboardMode = true;
     if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.closeModal(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
+    if (e.key === "Escape" && this.fsNote) { e.preventDefault(); this.fsCancel(); return; }
     // While the video list holds focus, its own keydown owns the navigation keys —
     // the player must not also act on j/k/Space/arrows then.
     if (this.navActive && (e.composedPath()[0] as HTMLElement)?.closest?.(".lib") &&
         (((e.key === "ArrowUp" || e.key === "ArrowDown") && this.arrowNav) || ((e.key === "j" || e.key === "k") && this.vimNav)
          || e.key === "Home" || e.key === "End" || e.key === "Enter" || e.key === " ")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
-    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox) return;
+    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox || this.fsNote) return;
     if (e.key === "Escape" && this.playerActive) { e.preventDefault(); this.playerActive = false; this.cursorToPlayer(); this.placeCursor(true); return; }
     if (e.key === "Escape" && this.focusedPane) { e.preventDefault(); this.focusedPane = null; this.cursorBox = null; this.navHud = null; ((this.renderRoot as ShadowRoot).activeElement as HTMLElement | null)?.blur?.(); return; }
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
-    if (e.key === "?") { e.preventDefault(); this.cheatOpen = true; return; }
+    if (e.key === "?") { e.preventDefault(); this.openModal("cheat"); return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
     // `g` leader → jump to a pane / view (Phoneme-style "go to" chords).
     if (e.key === "g") { e.preventDefault(); this.pendingG = Date.now(); return; }
@@ -514,7 +515,9 @@ export class App extends LitElement {
       try {
         const n = await api.importYoutubePlaylist(list);
         await this.refreshVideos();
-        this.syncMissingMeta();
+        // loadVideo (below) already runs syncMissingMeta when there's a v= id;
+        // only fire it standalone for a pure-playlist URL that won't load a video.
+        if (!id) this.syncMissingMeta();
         this.flash(n ? `Imported ${n} video${n > 1 ? "s" : ""} from playlist` : "Playlist already in your library", "ok");
       } catch (e) { this.flash(String(e), "err"); }
       if (id) this.loadVideo(id, raw);
@@ -625,14 +628,17 @@ export class App extends LitElement {
     if (!panel) return [];
     return [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(isVisible);
   }
-  private openModal(which: "search" | "settings" | "tagmgr" | "doctor") {
+  private openModal(which: "search" | "settings" | "tagmgr" | "doctor" | "cheat" | "findReplace") {
     if (this.closeTimer) { clearTimeout(this.closeTimer); this.closeTimer = 0; }
     this.modalClosing = false;
     this.searchOpen = this.settingsOpen = this.tagMgrOpen = this.doctorOpen = this.cheatOpen = this.findReplaceOpen = false;
     this.lastFocus = ((this.renderRoot as ShadowRoot).activeElement as HTMLElement) ?? null;
-    if (which === "search") { this.searchResults = []; this.phonemeHits = []; this.searchOpen = true; }
+    // Bump the search generation so a late in-flight query can't repopulate a freshly-opened modal.
+    if (which === "search") { this.searchGen++; this.searchResults = []; this.phonemeHits = []; this.searchOpen = true; }
     else if (which === "tagmgr") this.tagMgrOpen = true;
     else if (which === "doctor") this.doctorOpen = true;
+    else if (which === "cheat") this.cheatOpen = true;
+    else if (which === "findReplace") this.findReplaceOpen = true;
     else this.settingsOpen = true;
     this.updateComplete.then(() => this.focusables()[0]?.focus());
   }
@@ -702,6 +708,11 @@ export class App extends LitElement {
       if (data.tagColors && typeof data.tagColors === "object") localStorage.setItem("ytnt.tagColors", JSON.stringify(data.tagColors));
     } catch { /**/ }
     const stats = await api.importJson(raw);
+    // Reload in-memory state from the localStorage we just wrote — otherwise the
+    // next setSetting() serializes stale settings back and clobbers the import.
+    this.settings = loadSettings();
+    try { this.localTagColors = JSON.parse(localStorage.getItem("ytnt.tagColors") || "{}"); } catch { /**/ }
+    document.documentElement.dataset.theme = this.settings.theme;
     await this.refreshVideos(); await this.refreshNotes();
     const skipped = stats.skipped_videos + stats.skipped_notes;
     const msg = skipped > 0
@@ -1027,10 +1038,6 @@ export class App extends LitElement {
     const hud = pr ? { side: Math.max(8, Math.round(window.innerWidth - pr.right + 8)), label } : null;
     if (hud?.side !== this.navHud?.side || hud?.label !== this.navHud?.label) this.navHud = hud;
   }
-  private seedGridCursor(pane: "sidebar" | "list" | "detail") {
-    if (pane !== "list" && this.gridRow < 0) { this.gridRow = 0; this.gridCol = 0; this.desiredX = null; }
-    this.placeCursor(true);
-  }
   private visiblePanes(): Array<"sidebar" | "list" | "detail"> {
     return this.PANE_ORDER.filter((p) => (p === "list" ? this.listOpen : p === "sidebar" ? this.sidebarOpen : true));
   }
@@ -1326,8 +1333,8 @@ export class App extends LitElement {
           title=${`${this.phonemeOk ? `Phoneme connected${this.phonemeVersion ? ` (${this.phonemeVersion})` : ""}` : this.phonemePresent ? "Phoneme installed — daemon not responding" : "Phoneme not detected"} — click for diagnostics`}></button>
       </header>
 
-      <div class="resizer rz-sidebar" title="Drag to resize" @pointerdown=${(e: PointerEvent) => this.startResize("sidebar", e)}></div>
-      <div class="resizer rz-list" title="Drag to resize" @pointerdown=${(e: PointerEvent) => this.startResize("list", e)}></div>
+      <div class="resizer rz-sidebar" title="Drag to resize" aria-hidden="true" @pointerdown=${(e: PointerEvent) => this.startResize("sidebar", e)}></div>
+      <div class="resizer rz-list" title="Drag to resize" aria-hidden="true" @pointerdown=${(e: PointerEvent) => this.startResize("list", e)}></div>
 
       <aside ?inert=${trapped} tabindex="-1" id="pane-sidebar">
         <div class="section">
@@ -1339,12 +1346,12 @@ export class App extends LitElement {
           </div>
           ${!this.folds.lib ? html`
             <button class="sidebar-item ${this.libView === "all" && !this.tagFilter ? "on" : ""}"
-              ?aria-pressed=${this.libView === "all" && !this.tagFilter}
+              aria-pressed=${this.libView ==="all" && !this.tagFilter}
               @click=${() => { this.libView = "all"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">${I.film}</span><span class="si-label">All videos</span><span class="count">${this.videos.length}</span>
             </button>
             <button class="sidebar-item ${this.libView === "transcript" ? "on" : ""}"
-              ?aria-pressed=${this.libView === "transcript" && !this.tagFilter}
+              aria-pressed=${this.libView ==="transcript" && !this.tagFilter}
               @click=${() => { this.libView = "transcript"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">${I.captions}</span><span class="si-label">With transcript</span><span class="count">${transcriptCount}</span>
             </button>` : nothing}
@@ -1358,14 +1365,14 @@ export class App extends LitElement {
           </div>
           ${!this.folds.tags ? html`
             <button class="sidebar-item ${this.libView === "untagged" && !this.tagFilter ? "on" : ""}"
-              ?aria-pressed=${this.libView === "untagged" && !this.tagFilter}
+              aria-pressed=${this.libView ==="untagged" && !this.tagFilter}
               @click=${() => { this.libView = "untagged"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">#</span><span class="si-label">Untagged</span>
               <span class="tag-dot tag-dot-none" title="Videos with no tags"></span>
               <span class="count">${untaggedCount}</span>
             </button>
             <button class="sidebar-item ${this.libView === "tagged" && !this.tagFilter ? "on" : ""}"
-              ?aria-pressed=${this.libView === "tagged" && !this.tagFilter}
+              aria-pressed=${this.libView ==="tagged" && !this.tagFilter}
               @click=${() => { this.libView = "tagged"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon tag-hash">#</span><span class="si-label">Tagged</span>
               <span class="tag-dot tag-dot-rainbow" title="Videos with at least one tag"></span>
@@ -1406,10 +1413,10 @@ export class App extends LitElement {
         <div class="lib" id="pane-list" tabindex="0"
           @focusin=${() => { if (this.kbdIndex < 0 && this.navVids.length) this.kbdIndex = Math.max(0, this.navVids.findIndex((v) => v.id === this.currentId)); }}
           @keydown=${(e: KeyboardEvent) => this.onListKey(e)}>
-          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? repeat(vids, (v) => v.id, (v, i) => {
+          ${this.plFilter ? this.renderPlaylistBrowse() : vids.length ? repeat(vids, (v) => v.id, (v) => {
             const sub = [v.channel, v.view_count != null ? formatViews(v.view_count) : "", v.published_at ? relativeDate(v.published_at) : ""].filter(Boolean);
             return html`
-            <button class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""} ${this.freshVidIds.has(v.id) ? "fresh" : ""}" title="Shift-click to select" ?aria-current=${v.id === this.currentId ? "true" : nothing} @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))}>
+            <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""} ${this.freshVidIds.has(v.id) ? "fresh" : ""}" role="button" tabindex="0" aria-label=${v.title || v.id} title="Shift-click to select" ?aria-current=${v.id === this.currentId ? "true" : nothing} @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); if (e.shiftKey) this.toggleSelect(v.id); else this.toggleVideo(v.id, v.url); } }}>
               <div class="thumbwrap">
                 <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                   @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
@@ -1425,7 +1432,7 @@ export class App extends LitElement {
                 <button class="ghost pin ${v.pinned ? "on" : ""}" title=${v.pinned ? "Unpin" : "Pin to top"} @click=${(e: Event) => { e.stopPropagation(); this.togglePin(v.id, v.pinned); }}>${I.pin}</button>
                 <button class="ghost rm" title="Remove" @click=${(e: Event) => { e.stopPropagation(); this.removeVideo(v.id); }}>${I.close}</button>
               </div>
-            </button>`;
+            </div>`;
           }) : html`<div class="empty-lib">${this.videos.length
               ? html`No videos match this filter.<br /><button class="linkbtn" @click=${() => { this.tagFilter = null; this.libView = "all"; }}>Clear filters</button>`
               : "No videos yet — load one to start."}</div>`}
@@ -1451,7 +1458,7 @@ export class App extends LitElement {
           <div id="player"></div>
           ${this.currentId ? html`<button class="fs-btn" title="Fullscreen (F) — add notes without leaving" @click=${() => this.toggleFullscreen()}>${I.expand}</button>` : nothing}
           ${this.fsNote ? html`<div class="fs-note" @click=${(e: Event) => { if (e.target === e.currentTarget) this.fsCancel(); }}>
-            <div class="fs-note-card">
+            <div class="fs-note-card" role="dialog" aria-modal="true" aria-label="Add note">
               <div class="fs-note-head"><span class="ts">${formatTime(this.fsNote.t)}</span><span class="muted sm">Note at this moment</span></div>
               <textarea id="fsNoteInput" placeholder="Write a note… Markdown supported."
                 @keydown=${(e: KeyboardEvent) => {
@@ -1467,7 +1474,7 @@ export class App extends LitElement {
             </div>
           </div>` : nothing}
         </div>
-        <div id="timeline" class=${this.currentId ? "" : "hidden"} title="click to seek" @click=${(e: MouseEvent) => this.timelineClick(e)}>
+        <div id="timeline" class=${this.currentId ? "" : "hidden"} title="click to seek" aria-hidden="true" @click=${(e: MouseEvent) => this.timelineClick(e)}>
           <div id="progress"></div>
           ${this.dur ? this.notes.map((n) => html`<div class="marker" style="left:${(n.t_secs / this.dur) * 100}%"
             title=${`${formatTime(n.t_secs)} — ${n.content}`}
@@ -1506,16 +1513,16 @@ export class App extends LitElement {
         </div>` : nothing}
 
         <div class="toolbar ${this.currentId ? "" : "hidden"}">
-          <div class="tabs" role="tablist">
-            <button class="tab ${this.view === "notes" ? "on" : ""}" role="tab" ?aria-selected=${this.view === "notes"} @click=${() => (this.view = "notes")}>Notes</button>
-            <button class="tab ${this.view === "transcript" ? "on" : ""}" role="tab" ?aria-selected=${this.view === "transcript"} @click=${() => this.openTranscript()}>Transcript</button>
+          <div class="tabs">
+            <button class="tab ${this.view === "notes" ? "on" : ""}" aria-pressed=${this.view === "notes"} @click=${() => (this.view = "notes")}>Notes</button>
+            <button class="tab ${this.view === "transcript" ? "on" : ""}" aria-pressed=${this.view === "transcript"} @click=${() => this.openTranscript()}>Transcript</button>
           </div>
           ${this.view === "notes" ? html`
             <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">Alt+N</span></button>
             <input type="text" placeholder="Filter notes…" .value=${this.filter}
               @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)} />
             ${this.current?.manual_order ? html`<button @click=${() => this.resetOrder()}>By time</button>` : nothing}
-            <button class="ghost" title="Find & replace in notes" aria-label="Find and replace" ?disabled=${!this.notes.length} @click=${() => (this.findReplaceOpen = true)}>${I.replace}</button>
+            <button class="ghost" title="Find & replace in notes" aria-label="Find and replace" ?disabled=${!this.notes.length} @click=${() => this.openModal("findReplace")}>${I.replace}</button>
             ${this.notes.length ? html`<details class="menu">
               <summary class="ghost" title="Export notes">${I.download} Export ${I.caret}</summary>
               <div class="menu-pop">
@@ -1542,7 +1549,7 @@ export class App extends LitElement {
           ? html`<div class="notes" role="list" aria-label="Notes for this video" @click=${(e: Event) => this.onNotesClick(e)}>
               ${filtered.length === 0 && !this.editing ? html`<div class="empty"><h3>${this.filter ? "No matching notes" : "No notes yet"}</h3><p>${this.filter ? "Try a different search." : html`Press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.`}</p></div>` : nothing}
               ${this.editing && !this.editing.id ? this.renderEditor() : nothing}
-              ${filtered.map((n) => (this.editing?.id === n.id ? this.renderEditor() : this.renderNote(n)))}
+              ${repeat(filtered, (n) => n.id, (n) => (this.editing?.id === n.id ? this.renderEditor() : this.renderNote(n)))}
             </div>`
           : this.renderTranscript()}
       </main>
@@ -1572,8 +1579,8 @@ export class App extends LitElement {
           <button class="bulk-btn bulk-btn--muted" @click=${() => (this.selected = new Set())}>✕ Deselect</button>
         </div>
       </div>` : nothing}
-      ${this.toasts.length ? html`<div class="toasts" role="status" aria-live="polite">
-        ${this.toasts.map((t) => html`<div class="toast ${t.kind} ${t.out ? "out" : ""}"><span class="ti">${t.kind === "ok" ? "✓" : t.kind === "err" ? "✕" : "i"}</span><span>${t.msg}</span></div>`)}
+      ${this.toasts.length ? html`<div class="toasts">
+        ${this.toasts.map((t) => html`<div class="toast ${t.kind} ${t.out ? "out" : ""}" role=${t.kind === "err" ? "alert" : "status"} aria-live=${t.kind === "err" ? "assertive" : "polite"}><span class="ti">${t.kind === "ok" ? "✓" : t.kind === "err" ? "✕" : "i"}</span><span>${t.msg}</span></div>`)}
       </div>` : nothing}
       ${this.cursorBox ? html`<div class="kbd-cur ${this.playerActive ? "playing" : ""}" style="transform:translate(${this.cursorBox.x}px,${this.cursorBox.y}px);width:${this.cursorBox.w}px;height:${this.cursorBox.h}px"></div>` : nothing}
       ${this.cursorBox && this.navHud ? html`
@@ -1606,7 +1613,7 @@ export class App extends LitElement {
     const mdKey = n.id + "::" + n.content;
     let md = this._mdCache.get(mdKey);
     if (md === undefined) { md = renderMarkdown(n.content); this._mdCache.set(mdKey, md); }
-    return html`<div class="note ${this.selectedId === n.id ? "selected" : ""}" role="listitem" ?aria-selected=${this.selectedId === n.id} @click=${() => (this.selectedId = n.id)}>
+    return html`<div class="note ${this.selectedId === n.id ? "selected" : ""}" role="listitem" @click=${() => (this.selectedId = n.id)}>
       <button class="ts" title="Jump to ${formatTime(n.t_secs)}" aria-label="Jump to ${formatTime(n.t_secs)}" @click=${() => this.seek(n.t_secs)}>${formatTime(n.t_secs)}</button>
       <div class="grow body">${unsafeHTML(md)}</div>
       <div class="acts">
@@ -1891,11 +1898,11 @@ export class App extends LitElement {
     // Done — Transcript / Compare / Summary views.
     return html`<div class="notes tpane">
       ${this.renderCompatNotice()}
-      <div class="tview-tabs" role="tablist">
-        <button class="tab ${this.transcriptView === "transcript" ? "on" : ""}" role="tab" ?aria-selected=${this.transcriptView === "transcript"} @click=${() => (this.transcriptView = "transcript")}>Transcript</button>
-        ${this.chapters.length ? html`<button class="tab ${this.transcriptView === "chapters" ? "on" : ""}" role="tab" ?aria-selected=${this.transcriptView === "chapters"} @click=${() => (this.transcriptView = "chapters")}>Chapters (${this.chapters.length})</button>` : nothing}
-        <button class="tab ${this.transcriptView === "compare" ? "on" : ""}" role="tab" ?aria-selected=${this.transcriptView === "compare"} @click=${() => (this.transcriptView = "compare")}>Compare${this.phonemeVersions.length > 1 ? ` (${this.phonemeVersions.length})` : ""}</button>
-        <button class="tab ${this.transcriptView === "summary" ? "on" : ""}" role="tab" ?aria-selected=${this.transcriptView === "summary"} @click=${() => (this.transcriptView = "summary")}>Summary</button>
+      <div class="tview-tabs">
+        <button class="tab ${this.transcriptView === "transcript" ? "on" : ""}" aria-pressed=${this.transcriptView === "transcript"} @click=${() => (this.transcriptView = "transcript")}>Transcript</button>
+        ${this.chapters.length ? html`<button class="tab ${this.transcriptView === "chapters" ? "on" : ""}" aria-pressed=${this.transcriptView === "chapters"} @click=${() => (this.transcriptView = "chapters")}>Chapters (${this.chapters.length})</button>` : nothing}
+        <button class="tab ${this.transcriptView === "compare" ? "on" : ""}" aria-pressed=${this.transcriptView === "compare"} @click=${() => (this.transcriptView = "compare")}>Compare${this.phonemeVersions.length > 1 ? ` (${this.phonemeVersions.length})` : ""}</button>
+        <button class="tab ${this.transcriptView === "summary" ? "on" : ""}" aria-pressed=${this.transcriptView === "summary"} @click=${() => (this.transcriptView = "summary")}>Summary</button>
       </div>
       ${this.transcriptView === "summary" ? this.renderSummary()
         : this.transcriptView === "chapters" ? this.renderChapters()
