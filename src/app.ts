@@ -64,7 +64,76 @@ function themeLabel(slug: string): string {
   return slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
-interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; phonemeRecipe: string; vimNav: boolean; arrowNav: boolean; }
+interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; phonemeRecipe: string; vimNav: boolean; arrowNav: boolean; keymapPreset: string; keymapOverrides: Record<string, string[]>; }
+
+// ── Rebindable keyboard actions (the structural nav keys — hjkl, g-chords, Esc,
+// Tab — are deliberately NOT here; they ARE the navigation model). A binding is a
+// normalized chord string from normChord(): e.g. "ctrl+n", "space", "arrowleft",
+// "shift+arrowright", ">". Each action can have several default chords.
+type KeyAction =
+  | "playPause" | "back10" | "fwd10" | "back5" | "fwd5" | "back30" | "fwd30"
+  | "speedUp" | "speedDown" | "mute" | "fullscreen"
+  | "capture" | "search" | "cheat" | "sidebar"
+  | "noteUp" | "noteDown" | "noteEdit" | "noteDelete";
+type Keymap = Record<KeyAction, string[]>;
+const KEY_ACTIONS: { id: KeyAction; label: string; group: "Playback" | "Notes" | "App" }[] = [
+  { id: "playPause", label: "Play / pause", group: "Playback" },
+  { id: "back10", label: "Back 10 seconds", group: "Playback" },
+  { id: "fwd10", label: "Forward 10 seconds", group: "Playback" },
+  { id: "back5", label: "Back 5 seconds", group: "Playback" },
+  { id: "fwd5", label: "Forward 5 seconds", group: "Playback" },
+  { id: "back30", label: "Back 30 seconds", group: "Playback" },
+  { id: "fwd30", label: "Forward 30 seconds", group: "Playback" },
+  { id: "speedUp", label: "Speed up", group: "Playback" },
+  { id: "speedDown", label: "Slow down", group: "Playback" },
+  { id: "mute", label: "Mute / unmute", group: "Playback" },
+  { id: "fullscreen", label: "Fullscreen", group: "Playback" },
+  { id: "capture", label: "Add note", group: "App" },
+  { id: "search", label: "Search", group: "App" },
+  { id: "cheat", label: "Cheat sheet", group: "App" },
+  { id: "sidebar", label: "Toggle sidebar", group: "App" },
+  { id: "noteUp", label: "Previous note", group: "Notes" },
+  { id: "noteDown", label: "Next note", group: "Notes" },
+  { id: "noteEdit", label: "Edit selected note", group: "Notes" },
+  { id: "noteDelete", label: "Delete selected note", group: "Notes" },
+];
+const KEYMAP_PRESETS: Record<string, Keymap> = {
+  default: {
+    playPause: ["space", "k"], back10: ["j"], fwd10: ["l"], back5: ["arrowleft"], fwd5: ["arrowright"],
+    back30: ["shift+arrowleft"], fwd30: ["shift+arrowright"], speedUp: ["+", "="], speedDown: ["-", "_"],
+    mute: ["m"], fullscreen: ["f"], capture: ["ctrl+n"], search: ["/"], cheat: ["?"], sidebar: ["ctrl+b"],
+    noteUp: ["arrowup"], noteDown: ["arrowdown"], noteEdit: ["enter"], noteDelete: ["delete"],
+  },
+  youtube: {
+    playPause: ["k", "space"], back10: ["j"], fwd10: ["l"], back5: ["arrowleft"], fwd5: ["arrowright"],
+    back30: ["shift+arrowleft"], fwd30: ["shift+arrowright"], speedUp: [">"], speedDown: ["<"],
+    mute: ["m"], fullscreen: ["f"], capture: ["ctrl+n"], search: ["/"], cheat: ["?"], sidebar: ["ctrl+b"],
+    noteUp: ["arrowup"], noteDown: ["arrowdown"], noteEdit: ["enter"], noteDelete: ["delete"],
+  },
+  vim: {
+    playPause: ["space"], back10: ["b"], fwd10: ["w"], back5: ["h"], fwd5: ["l"],
+    back30: ["shift+h"], fwd30: ["shift+l"], speedUp: ["+", "="], speedDown: ["-", "_"],
+    mute: ["m"], fullscreen: ["f"], capture: ["ctrl+n"], search: ["/"], cheat: ["?"], sidebar: ["ctrl+b"],
+    noteUp: ["k"], noteDown: ["j"], noteEdit: ["enter"], noteDelete: ["delete"],
+  },
+};
+const RESERVED_CHORDS = new Set(["escape", "tab", "g"]);
+/** Normalize a keydown into a stable chord string. Shift is only encoded for named
+ *  keys (Arrow*, Enter…); for printable chars the character already reflects shift. */
+function normChord(e: KeyboardEvent): string {
+  let k = e.key;
+  if (k === " ") k = "space";
+  const named = k.length > 1;
+  k = k.toLowerCase();
+  const mod = (e.ctrlKey || e.metaKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "") + (e.shiftKey && named ? "shift+" : "");
+  return mod + k;
+}
+/** Pretty-print a chord for the UI: "ctrl+n" → "Ctrl+N", "arrowleft" → "←". */
+function chordLabel(c: string): string {
+  const map: Record<string, string> = { ctrl: "Ctrl", shift: "Shift", alt: "Alt", space: "Space", arrowleft: "←", arrowright: "→", arrowup: "↑", arrowdown: "↓", enter: "↵", delete: "Del" };
+  return c.split("+").map((p) => map[p] ?? (p.length === 1 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1))).join("+");
+}
+function actionLabel(id: KeyAction): string { return KEY_ACTIONS.find((a) => a.id === id)?.label ?? id; }
 /** One Diagnostics ("ytnt doctor") check, mirroring Phoneme's CheckResult shape. */
 type DoctorCheck = { name: string; ok: boolean; cat: "critical" | "warning" | "info"; detail: string; fix?: { label: string; run: () => void } };
 type Editing = { id?: string; t: number; draft: string } | null;
@@ -174,6 +243,37 @@ export class App extends LitElement {
   private get vimNav() { return this.settings.vimNav; }
   private get arrowNav() { return this.settings.arrowNav; }
   private get navActive() { return this.settings.vimNav || this.settings.arrowNav; }
+  // Keybinds: active map = chosen preset with per-action overrides applied. The
+  // reverse (chord → action) map is memoized and cleared when the bindings change.
+  @state() private capturingAction: KeyAction | null = null;
+  private _keymapRev: Record<string, KeyAction> | null = null;
+  private activeKeymap(): Keymap {
+    const base = KEYMAP_PRESETS[this.settings.keymapPreset] ?? KEYMAP_PRESETS.default;
+    const ov = this.settings.keymapOverrides || {};
+    const out = {} as Keymap;
+    for (const a of KEY_ACTIONS) out[a.id] = ov[a.id] ?? base[a.id];
+    return out;
+  }
+  private keyAction(chord: string): KeyAction | undefined {
+    if (!this._keymapRev) {
+      const km = this.activeKeymap();
+      const rev: Record<string, KeyAction> = {};
+      for (const a of KEY_ACTIONS) for (const c of km[a.id]) rev[c] = a.id;
+      this._keymapRev = rev;
+    }
+    return this._keymapRev[chord];
+  }
+  private startCapture(a: KeyAction) { this.capturingAction = a; }
+  private setBinding(a: KeyAction, chord: string) {
+    const ov = { ...(this.settings.keymapOverrides || {}) };
+    ov[a] = [chord];
+    this._keymapRev = null;
+    this.setSetting("keymapOverrides", ov);
+  }
+  private setKeymapPreset(p: string) { this._keymapRev = null; this.setSetting("keymapPreset", p); }
+  private resetKeymap() { this._keymapRev = null; this.setSetting("keymapPreset", "default"); this.setSetting("keymapOverrides", {}); this.flash("Shortcuts reset to defaults", "ok"); }
+  /** Display label for an action's current primary chord (for inline hints). */
+  private chordHint(a: KeyAction): string { const c = this.activeKeymap()[a]; return c.length ? chordLabel(c[0]) : "—"; }
   @state() private kbdIndex = -1;            // video-list keyboard cursor (-1 = none)
   private navVids: VideoWithCount[] = [];    // displayed video list, in DOM order (cursor indexes this)
   private seenVidIds = new Set<string>();    // one-shot row-enter animation bookkeeping
@@ -191,9 +291,26 @@ export class App extends LitElement {
   private _mdCache = new Map<string, string>();           // renderMarkdown cache keyed on note.id+'::'+content
 
   private onKey = (e: KeyboardEvent) => {
+    // Rebind capture: while a settings row is "listening", the next key (Esc cancels)
+    // becomes that action's binding. Reserved/duplicate chords are rejected.
+    if (this.capturingAction) {
+      if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.key === "Escape") { this.capturingAction = null; return; }
+      const ch = normChord(e);
+      if (RESERVED_CHORDS.has(ch)) { this.flash("That key is reserved for navigation", "err"); return; }
+      const owner = this.keyAction(ch);
+      if (owner && owner !== this.capturingAction) { this.flash(`${chordLabel(ch)} is already used by “${actionLabel(owner)}”`, "err"); return; }
+      this.setBinding(this.capturingAction, ch);
+      this.capturingAction = null;
+      return;
+    }
     if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") this.keyboardMode = true;
     if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.closeModal(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); this.toggleSidebar(); return; }
+    const chord = normChord(e);
+    const act = this.keyAction(chord);
+    // Sidebar toggle is allowed even mid-typing, but only as a modifier combo.
+    if (act === "sidebar" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); this.toggleSidebar(); return; }
     if (e.key === "Escape" && this.fsNote) { e.preventDefault(); this.fsCancel(); return; }
     // While the video list holds focus, its own keydown owns the navigation keys —
     // the player must not also act on j/k/Space/arrows then.
@@ -204,10 +321,12 @@ export class App extends LitElement {
     if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox || this.fsNote) return;
     if (e.key === "Escape" && this.playerActive) { e.preventDefault(); this.playerActive = false; this.cursorToPlayer(); this.placeCursor(true); return; }
     if (e.key === "Escape" && this.focusedPane) { e.preventDefault(); this.focusedPane = null; this.cursorBox = null; this.navHud = null; ((this.renderRoot as ShadowRoot).activeElement as HTMLElement | null)?.blur?.(); return; }
-    if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
-    if (e.key === "?") { e.preventDefault(); this.openModal("cheat"); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
-    // `g` leader → jump to a pane / view (Phoneme-style "go to" chords).
+    // Global actions (fire regardless of player / nav state).
+    if (act === "search") { e.preventDefault(); this.openModal("search"); return; }
+    if (act === "cheat") { e.preventDefault(); this.openModal("cheat"); return; }
+    if (act === "capture") { e.preventDefault(); this.capture(); return; }
+    if (act === "sidebar") { e.preventDefault(); this.toggleSidebar(); return; }
+    // `g` leader → jump to a pane / view (Phoneme-style "go to" chords). Reserved.
     if (e.key === "g") { e.preventDefault(); this.pendingG = Date.now(); return; }
     if (this.pendingG && Date.now() - this.pendingG < 1000) {
       this.pendingG = 0;
@@ -228,20 +347,23 @@ export class App extends LitElement {
     // Spatial navigation owns the keys whenever a nav layer is on and you aren't
     // fullscreen — so navigation is never eaten by the player.
     if (this.navActive && !fs && this.handleNav(e)) return;
-    // Player transport. YouTube-style keys reach the player only when you're "in"
-    // it: fullscreen, nav fully off, or you focused the player (g v / Enter on it).
+    // Player transport. Keys reach the player only when you're "in" it: fullscreen,
+    // nav fully off, or you focused the player (g v / Enter on it). Bindings are the
+    // user's keymap; 0–9 deciles are a fixed family.
     if (this.currentId && (!this.navActive || fs || this.playerActive)) {
-      if (e.key === " ") { e.preventDefault(); this.player?.toggle(); return; }
-      if (e.key === "ArrowLeft") { e.preventDefault(); this.player?.seekBy(e.shiftKey ? -30 : -5); return; }
-      if (e.key === "ArrowRight") { e.preventDefault(); this.player?.seekBy(e.shiftKey ? 30 : 5); return; }
-      if (e.key === "+" || e.key === "=") { e.preventDefault(); this.changeRate(0.25); return; }
-      if (e.key === "-" || e.key === "_") { e.preventDefault(); this.changeRate(-0.25); return; }
-      const k = e.key.toLowerCase();
-      if (k === "k") { e.preventDefault(); this.player?.toggle(); return; }
-      if (k === "j") { e.preventDefault(); this.player?.seekBy(-10); return; }
-      if (k === "l") { e.preventDefault(); this.player?.seekBy(10); return; }
-      if (k === "m") { e.preventDefault(); this.player?.toggleMute(); return; }
-      if (k === "f") { e.preventDefault(); this.toggleFullscreen(); return; }
+      switch (act) {
+        case "playPause": e.preventDefault(); this.player?.toggle(); return;
+        case "back10": e.preventDefault(); this.player?.seekBy(-10); return;
+        case "fwd10": e.preventDefault(); this.player?.seekBy(10); return;
+        case "back5": e.preventDefault(); this.player?.seekBy(-5); return;
+        case "fwd5": e.preventDefault(); this.player?.seekBy(5); return;
+        case "back30": e.preventDefault(); this.player?.seekBy(-30); return;
+        case "fwd30": e.preventDefault(); this.player?.seekBy(30); return;
+        case "speedUp": e.preventDefault(); this.changeRate(0.25); return;
+        case "speedDown": e.preventDefault(); this.changeRate(-0.25); return;
+        case "mute": e.preventDefault(); this.player?.toggleMute(); return;
+        case "fullscreen": e.preventDefault(); this.toggleFullscreen(); return;
+      }
       if (/^[0-9]$/.test(e.key) && this.dur) { e.preventDefault(); this.player?.seekTo((this.dur * +e.key) / 10); return; }
     }
     // Note-list selection — watch mode only (with nav on, notes are reached as grid cells).
@@ -249,10 +371,10 @@ export class App extends LitElement {
     const list = this.displayed();
     if (!list.length) return;
     const idx = list.findIndex((n) => n.id === this.selectedId);
-    if (e.key === "ArrowDown") { e.preventDefault(); this.select(list[Math.min(list.length - 1, idx + 1)]); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); this.select(list[Math.max(0, idx < 0 ? 0 : idx - 1)]); }
-    else if (e.key === "Enter" && idx >= 0) { e.preventDefault(); this.edit(list[idx]); }
-    else if (e.key === "Delete" && idx >= 0) { e.preventDefault(); this.del(list[idx].id); }
+    if (act === "noteDown") { e.preventDefault(); this.select(list[Math.min(list.length - 1, idx + 1)]); }
+    else if (act === "noteUp") { e.preventDefault(); this.select(list[Math.max(0, idx < 0 ? 0 : idx - 1)]); }
+    else if (act === "noteEdit" && idx >= 0) { e.preventDefault(); this.edit(list[idx]); }
+    else if (act === "noteDelete" && idx >= 0) { e.preventDefault(); this.del(list[idx].id); }
   };
 
   // The YouTube iframe steals keyboard focus on click; return it to the app so
@@ -733,6 +855,7 @@ export class App extends LitElement {
     // Reload in-memory state from the localStorage we just wrote — otherwise the
     // next setSetting() serializes stale settings back and clobbers the import.
     this.settings = loadSettings();
+    this._keymapRev = null;
     try { this.localTagColors = JSON.parse(localStorage.getItem("ytnt.tagColors") || "{}"); } catch { /**/ }
     document.documentElement.dataset.theme = this.settings.theme;
     await this.refreshVideos(); await this.refreshNotes();
@@ -1546,7 +1669,7 @@ export class App extends LitElement {
             <button class="tab ${this.view === "transcript" ? "on" : ""}" aria-pressed=${this.view === "transcript"} @click=${() => this.openTranscript()}>Transcript</button>
           </div>
           ${this.view === "notes" ? html`
-            <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">Ctrl+N</span></button>
+            <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">${this.chordHint("capture")}</span></button>
             <input type="text" placeholder="Filter notes…" .value=${this.filter}
               @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)} />
             ${this.current?.manual_order ? html`<button @click=${() => this.resetOrder()}>By time</button>` : nothing}
@@ -1575,7 +1698,7 @@ export class App extends LitElement {
           ? html`<div class="empty detail-empty"><h3>No video selected</h3><p>Pick a video from the list, or paste a YouTube link above it.</p></div>`
           : this.view === "notes"
           ? html`<div class="notes" role="list" aria-label="Notes for this video" @click=${(e: Event) => this.onNotesClick(e)}>
-              ${filtered.length === 0 && !this.editing ? html`<div class="empty"><h3>${this.filter ? "No matching notes" : "No notes yet"}</h3><p>${this.filter ? "Try a different search." : html`Press <span class="kbd2">Ctrl&nbsp;+&nbsp;N</span> to capture a note at the current moment.`}</p></div>` : nothing}
+              ${filtered.length === 0 && !this.editing ? html`<div class="empty"><h3>${this.filter ? "No matching notes" : "No notes yet"}</h3><p>${this.filter ? "Try a different search." : html`Press <span class="kbd2">${this.chordHint("capture")}</span> to capture a note at the current moment.`}</p></div>` : nothing}
               ${this.editing && !this.editing.id ? this.renderEditor() : nothing}
               ${repeat(filtered, (n) => n.id, (n) => (this.editing?.id === n.id ? this.renderEditor() : this.renderNote(n)))}
             </div>`
@@ -1807,6 +1930,26 @@ export class App extends LitElement {
           <div class="help muted sm">System-wide vim keys: <span class="kbd2">h</span>/<span class="kbd2">l</span> move between the sidebar, list and video panes; <span class="kbd2">j</span>/<span class="kbd2">k</span> move within one; <span class="kbd2">Enter</span> activates; <span class="kbd2">Esc</span> steps out. Press <span class="kbd2">?</span> for the full cheat-sheet.</div>
         </section>
         <section class="settings-section">
+          <h3>Keyboard shortcuts</h3>
+          <label class="field"><span>Preset</span>
+            <select @change=${(e: Event) => this.setKeymapPreset((e.target as HTMLSelectElement).value)}>
+              <option value="default" ?selected=${this.settings.keymapPreset === "default"}>Default</option>
+              <option value="youtube" ?selected=${this.settings.keymapPreset === "youtube"}>YouTube</option>
+              <option value="vim" ?selected=${this.settings.keymapPreset === "vim"}>Vim</option>
+            </select></label>
+          <div class="help muted sm">Pick a base, then change any individual key below. Navigation keys (<span class="kbd2">h</span><span class="kbd2">j</span><span class="kbd2">k</span><span class="kbd2">l</span>, the <span class="kbd2">g</span> chords, <span class="kbd2">Esc</span>, <span class="kbd2">Tab</span>) and the <span class="kbd2">0</span>–<span class="kbd2">9</span> seek keys are fixed.</div>
+          <div class="keymap-list">
+            ${KEY_ACTIONS.map((a) => html`<div class="keymap-row">
+              <span class="km-label">${a.label}</span>
+              ${this.capturingAction === a.id
+                ? html`<span class="km-capturing">Press a key… <span class="muted sm">Esc cancels</span></span>`
+                : html`<span class="km-keys">${this.activeKeymap()[a.id].map((c) => html`<kbd>${chordLabel(c)}</kbd>`)}</span>`}
+              <button class="ghost km-change" @click=${() => this.startCapture(a.id)} ?disabled=${this.capturingAction !== null && this.capturingAction !== a.id}>${this.capturingAction === a.id ? "Listening…" : "Change"}</button>
+            </div>`)}
+          </div>
+          <div class="row2"><span class="grow"></span><button class="ghost" @click=${() => this.resetKeymap()}>Reset to defaults</button></div>
+        </section>
+        <section class="settings-section">
           <h3>Capture</h3>
           <label class="field"><span>Auto-pause when adding a note</span>
             <input type="checkbox" .checked=${this.settings.autopause}
@@ -2020,14 +2163,17 @@ export class App extends LitElement {
   }
 
   private renderCheat() {
+    // Rebindable rows reflect the live keymap; nav/structural rows are fixed.
+    const kh = (a: KeyAction) => this.activeKeymap()[a].map(chordLabel).join(" / ");
     const rows: [string, string][] = [
-      ["Ctrl+N", "Add note at the current moment"],
-      ["Space / K", "Play / pause"],
-      ["J / L", "Back / forward 10s"],
-      ["← / →", "Back / forward 5s  (Shift = 30s)"],
-      ["+ / −", "Playback speed up / down"],
-      ["M / F", "Mute / fullscreen"],
-      ["Ctrl+B", "Toggle sidebar"],
+      [kh("capture"), "Add note at the current moment"],
+      [kh("playPause"), "Play / pause"],
+      [`${kh("back10")} / ${kh("fwd10")}`, "Back / forward 10s"],
+      [`${kh("back5")} / ${kh("fwd5")}`, "Back / forward 5s"],
+      [`${kh("back30")} / ${kh("fwd30")}`, "Back / forward 30s"],
+      [`${kh("speedUp")} / ${kh("speedDown")}`, "Playback speed up / down"],
+      [`${kh("mute")} / ${kh("fullscreen")}`, "Mute / fullscreen"],
+      [kh("sidebar"), "Toggle sidebar"],
       ["Shift+click", "Select videos (bulk)"],
       ["G then L / B", "Focus the list / sidebar filters"],
       ["G then V", "Enter the player (playback keys live; Esc out)"],
@@ -2040,10 +2186,10 @@ export class App extends LitElement {
       ["Enter", "Open / activate the cursored item"],
       ["Space", "Select / deselect a video (bulk)"],
       ["0–9", "Seek to 0–90%"],
-      ["↑ / ↓", "Select previous / next note"],
-      ["Enter / Delete", "Edit / delete selected note"],
-      ["/", "Search all notes"],
-      ["?", "Keyboard shortcuts (this)"],
+      [`${kh("noteUp")} / ${kh("noteDown")}`, "Select previous / next note"],
+      [`${kh("noteEdit")} / ${kh("noteDelete")}`, "Edit / delete selected note"],
+      [kh("search"), "Search all notes"],
+      [kh("cheat"), "Keyboard shortcuts (this)"],
       ["Esc", "Close dialog / cancel"],
     ];
     return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
@@ -2486,6 +2632,13 @@ export class App extends LitElement {
     .settings-section { display:flex; flex-direction:column; gap:10px; border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:10px 12px 12px; }
     .settings-section h3 { margin:0; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--accent); font-weight:700; }
     .help { color:var(--fg-faded); margin-top:-4px; line-height:1.45; }
+    .keymap-list { display:flex; flex-direction:column; }
+    .keymap-row { display:flex; align-items:center; gap:10px; padding:6px 0; border-top:1px solid var(--border-subtle); }
+    .km-label { flex:1; font-size:12.5px; color:var(--fg-default); }
+    .km-keys { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
+    .km-keys kbd { font:inherit; font-size:11px; background:var(--bg-deep); border:1px solid var(--border); border-radius:4px; padding:1px 6px; color:var(--fg-default); }
+    .km-capturing { font-size:12px; color:var(--accent); font-style:italic; }
+    .km-change { font-size:11.5px; padding:2px 9px; flex:0 0 auto; }
     .adv > summary { list-style:none; cursor:pointer; color:var(--fg-faded); font-size:12px; padding:4px 0; }
     .adv > summary::-webkit-details-marker { display:none; }
     .adv > summary:hover { color:var(--accent); }
@@ -2508,7 +2661,7 @@ export class App extends LitElement {
 }
 
 function loadSettings(): Settings {
-  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "", syncTags: true, phonemeRecipe: "", vimNav: false, arrowNav: false };
+  const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "", syncTags: true, phonemeRecipe: "", vimNav: false, arrowNav: false, keymapPreset: "default", keymapOverrides: {} };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
   catch { return def; }
 }

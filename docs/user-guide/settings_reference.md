@@ -13,6 +13,7 @@ Open Settings from the **gear** button in the top bar. Every change saves the mo
 | --- | --- |
 | **[Appearance](#-appearance)** | Color theme and whether the OS title bar is stripped. |
 | **[Motion & navigation](#-motion--navigation)** | Opt-in arrow-key and vim (hjkl) keyboard navigation. |
+| **[Keyboard shortcuts](#-keyboard-shortcuts)** | A keymap preset plus per-key rebinding for playback / note / app actions. |
 | **[Capture](#-capture)** | Auto-pause on note, and how many seconds before your keypress the timestamp lands. |
 | **[Storage & backup](#-storage--backup)** | The Markdown vault folder, plus JSON export/import of your whole library. |
 | **[Phoneme](#-phoneme)** | Path to the Phoneme CLI and two-way tag sync. |
@@ -51,7 +52,16 @@ The deep dive on themes and the borderless window — including how it interacts
 | **Arrow-key navigation** (`arrowNav`, default off) | Move around with the arrow keys — `←`/`→` step between panes, `↑`/`↓` move within one. |
 | **Vim (hjkl) navigation** (`vimNav`, default off) | The same on `h`/`j`/`k`/`l`, plus the `G`-leader pane jumps. |
 
-Both are **off by default**, so the arrow keys and `H`/`J`/`K`/`L` keep their player meanings until you opt in. The two layers are independent and combine — enable either or both. With a layer on, focus a pane (`G` then `L`/`B`/`V`, or click it) and move the cursor through every control; the focused pane shows an accent rail and a small HUD, and `Esc` steps out. The full key tables are in [Keyboard shortcuts → Keyboard navigation](keyboard_shortcuts.md#keyboard-navigation).
+Both are **off by default**, so the arrow keys and `H`/`J`/`K`/`L` keep their player meanings until you opt in. The two layers are independent and combine — enable either or both. With a layer on, focus a pane (`G` then `L`/`B`/`V`, or click it) and move the cursor through every control; the focused pane shows an accent rail and a small HUD pinned bottom-right, and `Esc` steps out. The full key tables are in [Keyboard shortcuts → Keyboard navigation](keyboard_shortcuts.md#keyboard-navigation).
+
+## ⌨️ Keyboard shortcuts
+
+| Area | What it controls |
+| --- | --- |
+| **Preset** (`keymapPreset`, default `default`) | The base keymap: **Default**, **YouTube** (speed on `<`/`>`), or **Vim** (seek on `h`/`l`, `b`/`w`). |
+| **Per-key overrides** (`keymapOverrides`, default empty) | Click **Change** next to an action and press the new key; **Reset to defaults** clears them all. |
+
+Rebindable actions cover **playback** (play/pause, ±5s/±10s/±30s, speed, mute, fullscreen), **notes** (previous/next/edit/delete), and **app** actions (add note, search, cheat sheet, sidebar toggle). The **navigation keys are fixed** — `h`/`j`/`k`/`l`, the `G`-leader chords, `Esc`, `Tab`, and the `0`–`9` seek keys aren't remappable, because they *are* the navigation model. Capturing a key that's already in use or reserved is rejected with a notice. Bindings live in `localStorage` and travel inside a JSON backup, so they move with your profile.
 
 ## ⏱️ Capture
 
@@ -152,11 +162,11 @@ All of these settings serialize to one JSON object in `localStorage` under `ytnt
 
 | Key | Holds |
 | --- | --- |
-| `ytnt.settings` | Every field on this page (`offset`, `autopause`, `vaultDir`, `theme`, `stripTitlebar`, `gClientId`, `gClientSecret`, `hiddenPlaylists`, `phonemeBin`, `syncTags`, `vimNav`, `arrowNav`, `phonemeRecipe`). |
+| `ytnt.settings` | Every field on this page (`offset`, `autopause`, `vaultDir`, `theme`, `stripTitlebar`, `gClientId`, `gClientSecret`, `hiddenPlaylists`, `phonemeBin`, `syncTags`, `vimNav`, `arrowNav`, `phonemeRecipe`, `keymapPreset`, `keymapOverrides`). |
 | `ytnt.tagColors` | Your local tag color overrides. |
 | `ytnt.tagSyncBase` | Per-video snapshots used as the base for the three-way tag merge. |
 
-The defaults, if a field is missing, are: `offset` `3`, `autopause` on, `vaultDir` empty, `theme` `catppuccin-mocha`, `stripTitlebar` off, `gClientId`/`gClientSecret` empty, `hiddenPlaylists` empty, `phonemeBin` empty, `syncTags` on, `vimNav` off, `arrowNav` off, `phonemeRecipe` empty.
+The defaults, if a field is missing, are: `offset` `3`, `autopause` on, `vaultDir` empty, `theme` `catppuccin-mocha`, `stripTitlebar` off, `gClientId`/`gClientSecret` empty, `hiddenPlaylists` empty, `phonemeBin` empty, `syncTags` on, `vimNav` off, `arrowNav` off, `phonemeRecipe` empty, `keymapPreset` `default`, `keymapOverrides` empty.
 
 `phonemeRecipe` stores the ID of the last-selected Phoneme transcription recipe for a given video. It defaults to an empty string and is updated automatically when you pick a recipe in the Phoneme panel — you will not normally edit this by hand.
 

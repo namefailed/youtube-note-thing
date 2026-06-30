@@ -15,6 +15,7 @@ A few rules govern when a key does something:
 - **Note-list keys need notes.** `↑`/`↓`/`Enter`/`Delete` act on the current video's note list and are ignored while you're editing a note.
 - **Keyboard navigation is opt-in.** The app-wide nav layer — pane jumps and the `h`/`j`/`k`/`l` cursor — is off until you turn on **Arrow-key** and/or **Vim (hjkl)** navigation in *Settings → Motion & navigation*. With it on, the focused pane shows an accent rail and a small HUD, and `Esc` steps back out. See [Keyboard navigation](#keyboard-navigation) below.
 - **The player keeps listening even when the video has focus.** Clicking the YouTube frame normally hands keyboard focus to the embed; ytnt quietly returns focus to the app and drives playback through the player's own API, so your shortcuts keep working either way.
+- **The playback, note, and app keys are customizable.** Everything in the Playback, Note list, Note editor, and Global tables below is a *default* — rebind any of them, or switch the whole keymap preset (Default / YouTube / Vim), in *Settings → Keyboard shortcuts*. The navigation keys (`h`/`j`/`k`/`l`, the `G`-leader chords, `Esc`, `Tab`) and the `0`–`9` seek keys are fixed.
 
 > [!NOTE]
 > Shortcuts use the literal keys YouTube watchers already know (`K`, `J`, `L`, `M`, `F`, number-row seeking), so muscle memory carries over.
