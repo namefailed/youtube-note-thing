@@ -78,6 +78,7 @@ export class App extends LitElement {
   @state() private notes: Note[] = [];
   @state() private editing: Editing = null;
   @state() private filter = "";
+  @state() private libQuery = "";   // top-bar omnibar text: live-filters the library; Enter → import (link) or note search (text)
   @state() private dur = 0;
   @state() private searchOpen = false;
   @state() private searchResults: SearchHit[] = [];
@@ -504,13 +505,34 @@ export class App extends LitElement {
     this.syncMissingMeta(); // backfill YouTube metadata for any new video (no-op if all cached)
   }
 
+  /** Does the omnibar text look like a YouTube video/playlist link? */
+  private omniIsUrl() {
+    const raw = this.libQuery.trim();
+    return !!raw && (parseVideoId(raw) !== null || parsePlaylistId(raw) !== null);
+  }
+  /** Enter / button in the omnibar: a link imports, plain text opens note search. */
+  private omniSubmit() {
+    const raw = this.libQuery.trim();
+    if (!raw) return;
+    if (this.omniIsUrl()) this.addFromInput();
+    else this.openSearchWith(raw);
+  }
+  /** Open the note-search modal pre-filled with `q` and run it immediately. */
+  private openSearchWith(q: string) {
+    this.openModal("search");
+    this.updateComplete.then(() => {
+      const input = this.renderRoot.querySelector(".sbar input") as HTMLInputElement | null;
+      if (input) { input.value = q; input.focus(); }
+      this.runSearch(q);
+    });
+  }
+
   private async addFromInput() {
-    const input = this.renderRoot.querySelector("#url") as HTMLInputElement;
-    const raw = input.value.trim();
+    const raw = this.libQuery.trim();
     const list = parsePlaylistId(raw);
     const id = parseVideoId(raw);
     if (list) {
-      input.value = "";
+      this.libQuery = "";
       this.flash("Importing playlist…");
       try {
         const n = await api.importYoutubePlaylist(list);
@@ -524,7 +546,7 @@ export class App extends LitElement {
       return;
     }
     if (!id) { this.flash("Not a valid YouTube URL", "err"); return; }
-    input.value = "";
+    this.libQuery = "";
     this.loadVideo(id, /^https?:/.test(raw) ? raw : `https://youtu.be/${id}`);
   }
 
@@ -1315,6 +1337,9 @@ export class App extends LitElement {
     else if (this.libView === "untagged") vids = vids.filter((v) => v.tags.length === 0);
     else if (this.libView === "tagged") vids = vids.filter((v) => v.tags.length > 0);
     if (this.tagFilter) vids = vids.filter((v) => v.tags.includes(this.tagFilter!));
+    // Omnibar live-filters the library by title (skip while it holds a link to import).
+    const lq = this.libQuery.trim().toLowerCase();
+    if (lq && !this.omniIsUrl()) vids = vids.filter((v) => (v.title || v.id).toLowerCase().includes(lq));
     vids = [...vids];
     if (!this.sortDesc) vids.reverse();          // list arrives newest-first; reverse → oldest-first
     vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
@@ -1326,10 +1351,11 @@ export class App extends LitElement {
       <header class="appbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
         <button class="ham" title="Toggle filters" aria-label="Toggle filters" @click=${() => this.toggleSidebar()}>${I.menu}</button>
         <button class="ham ${this.listOpen ? "" : "off"}" title="Toggle library list" aria-label="Toggle library" @click=${() => this.toggleList()}>${I.list}</button>
-        <input id="url" type="text" placeholder="Paste a YouTube video or playlist link…" autocomplete="off"
-          @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.addFromInput()} />
-        <button class="primary" @click=${() => this.addFromInput()}>Load</button>
-        <button class="ghost" title="Search all notes" aria-label="Search all notes" @click=${() => this.openModal("search")}>${I.search}</button>
+        <input id="url" type="text" placeholder="Search your library, or paste a link…" autocomplete="off"
+          .value=${this.libQuery}
+          @input=${(e: Event) => (this.libQuery = (e.target as HTMLInputElement).value)}
+          @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") this.omniSubmit(); }} />
+        <button class="primary" title=${this.omniIsUrl() ? "Import this link" : "Search all notes (Enter)"} ?disabled=${!this.libQuery.trim()} @click=${() => this.omniSubmit()}>${this.omniIsUrl() ? "Import" : "Search"}</button>
         <button class="ghost" title="Settings" aria-label="Settings" @click=${() => this.openModal("settings")}>${I.gear}</button>
         <button class="hdot ${this.phonemeOk ? "ok" : this.phonemePresent ? "warn" : ""} ${this.liveOn ? "busy" : ""}" aria-label="Open diagnostics" @click=${() => this.openModal("doctor")}
           title=${`${this.phonemeOk ? `Phoneme connected${this.phonemeVersion ? ` (${this.phonemeVersion})` : ""}` : this.phonemePresent ? "Phoneme installed — daemon not responding" : "Phoneme not detected"} — click for diagnostics`}></button>
@@ -1436,7 +1462,7 @@ export class App extends LitElement {
               </div>
             </div>`;
           }) : html`<div class="empty-lib">${this.videos.length
-              ? html`No videos match this filter.<br /><button class="linkbtn" @click=${() => { this.tagFilter = null; this.libView = "all"; }}>Clear filters</button>`
+              ? html`No videos match this filter.<br /><button class="linkbtn" @click=${() => { this.tagFilter = null; this.libView = "all"; this.libQuery = ""; }}>Clear filters</button>`
               : "No videos yet — load one to start."}</div>`}
         </div>
       </section>
