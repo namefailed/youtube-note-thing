@@ -145,7 +145,7 @@ The video now appears as a **library card** (channel, views, publish date, durat
 
 This is the path to follow if you only read one flow:
 
-1. **Capture** — press **Alt+N** (or the capture button). `capture()` reads `player.currentTime`, subtracts the configured **offset** (`applyOffset` — you usually want the note attached a few seconds before you reacted), and optionally **auto-pauses**. In our fullscreen mode the notes pane is hidden, so capture opens an overlay inside `#playerWrap` instead.
+1. **Capture** — press **Ctrl+N** (or the capture button). `capture()` reads `player.currentTime`, subtracts the configured **offset** (`applyOffset` — you usually want the note attached a few seconds before you reacted), and optionally **auto-pauses**. In our fullscreen mode the notes pane is hidden, so capture opens an overlay inside `#playerWrap` instead.
 2. **Edit** — an inline editor opens with the timestamp fixed; you type the note body.
 3. **Save** — `commit()` calls `create_note` (or `update_note` when editing). `Db::create_note` ([`src-tauri/src/db.rs`](../../src-tauri/src/db.rs)) inserts the row with a UUID and the next `order_index`.
 4. **Index** — the `notes_ai` trigger mirrors the new content into `notes_fts` automatically. No application code indexes anything.
@@ -162,7 +162,7 @@ This is the path to follow if you only read one flow:
 │  .sidebar    │  .list              │  .detail                     │
 │              │                     │                              │
 │  Filters:    │  Library cards:     │  #playerWrap (embedded YT)   │
-│   All        │   thumbnail-ish     │    └ fullscreen + Alt+N       │
+│   All        │   thumbnail-ish     │    └ fullscreen + Ctrl+N      │
 │   Has-       │   title, channel,   │      note overlay            │
 │   transcript │   views, date,      │                              │
 │   Untagged   │   duration, tags    │  Notes  /  Transcript        │

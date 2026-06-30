@@ -12,14 +12,14 @@ This page covers capturing notes, the capture offset, auto-pause, editing and re
 A note is a timestamp plus some text. The timestamp comes from wherever the player is when you capture; the text is yours.
 
 1. Load a video and start it playing (paste a link in the top bar and click **Load**, or pick one from the list).
-2. When you reach a moment worth marking, press `Alt + N` — or click **Add note** on the **Notes** tab.
+2. When you reach a moment worth marking, press `Ctrl + N` — or click **Add note** on the **Notes** tab.
 3. Type your note in the editor that appears. **Markdown is supported.**
 4. Press `Ctrl + Enter` (or `Ctrl + S`) to save, or `Esc` to cancel.
 
 The new note slots into the list at its timestamp, and a small marker appears on the timeline bar under the video at the matching position. Click any note's timestamp to jump the player straight there.
 
 > [!NOTE]
-> `Alt + N` and the player transport keys work even when the YouTube iframe has stolen focus — ytnt drives the player through its API and quietly hands keyboard focus back to itself, so your shortcuts keep firing after you click the video.
+> `Ctrl + N` and the player transport keys work even when the YouTube iframe has stolen focus — ytnt drives the player through its API and quietly hands keyboard focus back to itself, so your shortcuts keep firing after you click the video.
 
 ### The editor
 
@@ -33,7 +33,7 @@ The editor placeholder reminds you: *Write a note… Markdown supported.* Notes 
 
 ## ⏱️ Capture offset — why your note lands a few seconds early
 
-By the time you *react* to something and hit `Alt + N`, the moment you wanted is already a few seconds in the past. The **capture offset** fixes that: ytnt subtracts a fixed number of seconds from the player's current time when it stamps the note, so the timestamp lands just before the keypress — right on the moment, not after it.
+By the time you *react* to something and hit `Ctrl + N`, the moment you wanted is already a few seconds in the past. The **capture offset** fixes that: ytnt subtracts a fixed number of seconds from the player's current time when it stamps the note, so the timestamp lands just before the keypress — right on the moment, not after it.
 
 - Set it at **Settings → Capture → Capture offset (seconds)**.
 - Range `0`–`30`; default `3`.
@@ -85,7 +85,7 @@ Next to **Add note** is a **Filter notes…** box. It does a live, case-insensit
 You don't have to leave fullscreen to jot something down.
 
 1. With a video open, click the expand button on the player (its tooltip reads *Fullscreen (F) — add notes without leaving*), or press `F`.
-2. While fullscreen, press `Alt + N`. A slim note bar appears over the video showing the captured timestamp and an input.
+2. While fullscreen, press `Ctrl + N`. A slim note bar appears over the video showing the captured timestamp and an input.
 3. Type your note and press `Enter` to save, or `Esc` to cancel. (You can also click **Add** to save.)
 
 The overlay obeys the same **capture offset** and **auto-pause** settings as the normal editor — auto-pause stops the video when the bar opens and resumes it once you save or cancel.
@@ -159,7 +159,7 @@ These fire when a video is loaded and you're not typing in a field.
 
 | Keys | Action |
 | --- | --- |
-| `Alt + N` | Add a note at the current moment |
+| `Ctrl + N` | Add a note at the current moment |
 | `↑` / `↓` | Select previous / next note |
 | `Enter` | Edit the selected note |
 | `Delete` | Delete the selected note |

@@ -22,14 +22,14 @@ Paste a URL, watch, hit a key — your note is stamped to that moment. Click any
 | Principle | What It Means |
 |-----------|---------------|
 | **🔒 Local-first** | Every note lives in one **SQLite** file on your machine. No sign-up, no sync server, nothing phones home. |
-| **🪶 Keyboard-first** | Capture, seek, navigate, and search without leaving the keyboard — `Alt+N` stamps a note at the current second. |
+| **🪶 Keyboard-first** | Capture, seek, navigate, and search without leaving the keyboard — `Ctrl+N` stamps a note at the current second. |
 | **🔌 Optional integrations** | The app is complete on its own. [**Phoneme**](https://github.com/namefailed/phoneme) transcription and your YouTube account plug in when you want them — and stay out of the way when you don't. |
 
 ---
 
 ## ✨ Highlights
 
-- **🎯 Timestamped notes**: `Alt+N` captures the current second (with a configurable pre-roll `offset` and optional **auto-pause** while you type). Click any timestamp to seek the video right back to it.
+- **🎯 Timestamped notes**: `Ctrl+N` captures the current second (with a configurable pre-roll `offset` and optional **auto-pause** while you type). Click any timestamp to seek the video right back to it.
 - **⌨️ Keyboard transport**: `Space`/`K` play-pause, `J`/`L` jump ±10s, `←`/`→` nudge ±5s (`Shift` = 30s), `+`/`−` change speed, `M` mute, `F` fullscreen, `0`–`9` seek to 0–90%.
 - **🗂️ 3-pane library**: a **filters sidebar**, a **video list**, and a **detail pane**. Library cards surface channel, view count, publish date, and duration without covering the title.
 - **📌 Bulk actions**: **pin** videos, `Shift+click` to multi-select, then tag or act on the whole selection at once.

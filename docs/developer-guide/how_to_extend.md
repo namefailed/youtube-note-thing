@@ -165,7 +165,7 @@ Add a `[keys, description]` tuple to the `rows` array in `renderCheat()` (around
 ["C", "Toggle captions"],
 ```
 
-The existing bindings (authoritative — read them in `onKey`, don't trust memory) include `Alt+N` capture, `Space`/`K` play-pause, `J`/`L` ±10s, `←`/`→` ±5s (Shift = 30s), `+`/`−` speed, `M` mute, `F` fullscreen, `Ctrl+B` sidebar, `0`–`9` seek to percent, `↑`/`↓` note selection, `Enter`/`Delete` edit/delete note, `/` search, `?` this sheet, `Esc` close. The user-facing list is in [keyboard shortcuts](../user-guide/keyboard_shortcuts.md) — update it too if the shortcut is user-visible.
+The existing bindings (authoritative — read them in `onKey`, don't trust memory) include `Ctrl+N` capture, `Space`/`K` play-pause, `J`/`L` ±10s, `←`/`→` ±5s (Shift = 30s), `+`/`−` speed, `M` mute, `F` fullscreen, `Ctrl+B` sidebar, `0`–`9` seek to percent, `↑`/`↓` note selection, `Enter`/`Delete` edit/delete note, `/` search, `?` this sheet, `Esc` close. The user-facing list is in [keyboard shortcuts](../user-guide/keyboard_shortcuts.md) — update it too if the shortcut is user-visible.
 
 **Gotcha:** the YouTube iframe steals focus on click; `onFocusIn` blurs it back so shortcuts keep firing. Transport keys drive the player through its JS API (in [`src/player.ts`](../../src/player.ts)) precisely so they work regardless of focus — prefer that path over anything that needs the iframe focused.
 

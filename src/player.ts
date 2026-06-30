@@ -45,7 +45,7 @@ export class Player {
         videoId,
         playerVars: {
           // fs:0 hides YouTube's own fullscreen button so ours (which fullscreens
-          // #playerWrap and lets the Alt+N overlay render on top) is the only one.
+          // #playerWrap and lets the Ctrl+N overlay render on top) is the only one.
           enablejsapi: 1, playsinline: 1, rel: 0, fs: 0,
           origin: location.origin, start: Math.floor(startSeconds),
         },

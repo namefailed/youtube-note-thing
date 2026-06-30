@@ -98,7 +98,7 @@ The player is the real YouTube player embedded in the app, so playback quality a
 This is the whole point of ytnt — capturing a thought without losing your place.
 
 1. Play the video until you reach a moment worth noting.
-2. Press `Alt + N` (or click **Add note** under the player).
+2. Press `Ctrl + N` (or click **Add note** under the player).
 3. Type your note in the editor that appears and press `Enter` to save (or `Esc` to cancel).
 
 Two behaviors make this feel effortless, and both are on by default:

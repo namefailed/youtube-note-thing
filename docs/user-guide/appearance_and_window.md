@@ -65,9 +65,9 @@ To leave fullscreen, press `F` again or `Esc`.
 
 ### Capturing a note while fullscreen
 
-The whole point of ytnt's fullscreen is that you don't have to leave it to jot something down. In normal layout, **Add note** (`Alt+N`) opens the editor in the notes pane — but that pane is hidden in fullscreen. So when you're fullscreen, capturing a note instead pops a slim **note overlay** at the bottom of the video:
+The whole point of ytnt's fullscreen is that you don't have to leave it to jot something down. In normal layout, **Add note** (`Ctrl+N`) opens the editor in the notes pane — but that pane is hidden in fullscreen. So when you're fullscreen, capturing a note instead pops a slim **note overlay** at the bottom of the video:
 
-1. While fullscreen, press `Alt+N` (or your usual capture key).
+1. While fullscreen, press `Ctrl+N` (or your usual capture key).
 2. A timestamped input bar slides up over the video, pre-stamped with the current moment (minus your [capture offset](taking_notes.md)).
 3. Type your note.
 4. Press `Enter` (or click **Add**) to save it, or `Esc` to cancel.
@@ -90,6 +90,6 @@ The reason: the native YouTube fullscreen would put the bare iframe on top of ev
 
 - [Settings reference](settings_reference.md) — every setting in one place, with defaults.
 - [Taking notes](taking_notes.md) — the capture offset and auto-pause that the fullscreen overlay uses.
-- [Keyboard shortcuts](keyboard_shortcuts.md) — `F` for fullscreen, `Alt+N` to capture, and the rest of the transport keys (press `?` in the app for the cheat sheet).
+- [Keyboard shortcuts](keyboard_shortcuts.md) — `F` for fullscreen, `Ctrl+N` to capture, and the rest of the transport keys (press `?` in the app for the cheat sheet).
 - [Tags](tags.md) — tag colors that follow the active theme's accent.
 - [Troubleshooting](troubleshooting.md) — if the title bar doesn't come back after toggling strip mode on Windows.

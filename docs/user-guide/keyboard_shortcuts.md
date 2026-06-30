@@ -25,7 +25,7 @@ These work from anywhere outside a text field. `Ctrl + B` is special — it work
 
 | Keys | Action |
 | --- | --- |
-| `Alt + N` | Add a note at the current playback moment |
+| `Ctrl + N` | Add a note at the current playback moment |
 | `/` | Open search across all notes |
 | `?` | Open the keyboard-shortcuts cheat sheet |
 | `Ctrl + B` | Toggle the filters sidebar (also fires while typing) |
@@ -172,7 +172,7 @@ Press `?` to open the built-in cheat sheet. It shows the most common keys — a 
 
 | Keys | Action |
 | --- | --- |
-| `Alt+N` | Add note at the current moment |
+| `Ctrl+N` | Add note at the current moment |
 | `Space / K` | Play / pause |
 | `J / L` | Back / forward 10s |
 | `← / →` | Back / forward 5s (Shift = 30s) |

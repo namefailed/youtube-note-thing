@@ -180,7 +180,7 @@ export class App extends LitElement {
   private pendingG = 0;                       // `g` chord arm timestamp
   @state() private focusedPane: "sidebar" | "list" | "detail" | null = null;
   private gridRow = -1; private gridCol = 0; private desiredX: number | null = null;
-  @state() private navHud: { side: number; label: string } | null = null;
+  @state() private navHud: { label: string } | null = null;
   @state() private cursorBox: { x: number; y: number; w: number; h: number } | null = null;
   @state() private playerActive = false;     // cursor is "in" the video → transport keys live
   private keyboardMode = false;              // the cursor shows only while driving by keyboard
@@ -205,7 +205,7 @@ export class App extends LitElement {
     if (e.key === "Escape" && this.focusedPane) { e.preventDefault(); this.focusedPane = null; this.cursorBox = null; this.navHud = null; ((this.renderRoot as ShadowRoot).activeElement as HTMLElement | null)?.blur?.(); return; }
     if (e.key === "/") { e.preventDefault(); this.openModal("search"); return; }
     if (e.key === "?") { e.preventDefault(); this.openModal("cheat"); return; }
-    if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") { e.preventDefault(); this.capture(); return; }
     // `g` leader → jump to a pane / view (Phoneme-style "go to" chords).
     if (e.key === "g") { e.preventDefault(); this.pendingG = Date.now(); return; }
     if (this.pendingG && Date.now() - this.pendingG < 1000) {
@@ -1031,12 +1031,9 @@ export class App extends LitElement {
     if (r.width <= 0 || r.height <= 0) { if (this.cursorBox) this.cursorBox = null; return; }
     const box = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
     if (!this.cursorBox || box.x !== this.cursorBox.x || box.y !== this.cursorBox.y || box.w !== this.cursorBox.w || box.h !== this.cursorBox.h) this.cursorBox = box;
-    const pane = this.focusedPane!;
-    const paneEl = this.renderRoot.querySelector(pane === "sidebar" ? "aside" : pane === "list" ? ".list" : "main.detail") as HTMLElement | null;
-    const pr = paneEl?.getBoundingClientRect();
-    const label = this.playerActive ? "player" : pane;
-    const hud = pr ? { side: Math.max(8, Math.round(window.innerWidth - pr.right + 8)), label } : null;
-    if (hud?.side !== this.navHud?.side || hud?.label !== this.navHud?.label) this.navHud = hud;
+    // HUD is pinned bottom-right via CSS; only its label varies.
+    const label = this.playerActive ? "player" : this.focusedPane!;
+    if (this.navHud?.label !== label) this.navHud = { label };
   }
   private visiblePanes(): Array<"sidebar" | "list" | "detail"> {
     return this.PANE_ORDER.filter((p) => (p === "list" ? this.listOpen : p === "sidebar" ? this.sidebarOpen : true));
@@ -1169,7 +1166,12 @@ export class App extends LitElement {
   private async togglePlItem(it: PlaylistItem) {
     try {
       if (it.in_library) { await api.deleteVideo(it.video_id); if (this.currentId === it.video_id) this.deselect(); }
-      else await api.upsertVideo(it.video_id, `https://youtu.be/${it.video_id}`);
+      else {
+        await api.upsertVideo(it.video_id, `https://youtu.be/${it.video_id}`);
+        // We already know the title from the playlist listing — set it now so the
+        // card shows a real name immediately instead of the bare video id.
+        if (it.title) await api.setVideoTitle(it.video_id, it.title);
+      }
       this.plItems = this.plItems.map((x) => (x.video_id === it.video_id ? { ...x, in_library: !it.in_library } : x));
       await this.refreshVideos();
     } catch (e) { this.flash(String(e), "err"); }
@@ -1518,7 +1520,7 @@ export class App extends LitElement {
             <button class="tab ${this.view === "transcript" ? "on" : ""}" aria-pressed=${this.view === "transcript"} @click=${() => this.openTranscript()}>Transcript</button>
           </div>
           ${this.view === "notes" ? html`
-            <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">Alt+N</span></button>
+            <button class="primary" @click=${() => this.capture()} ?disabled=${!this.currentId}>${I.plus} Add note <span class="kbd">Ctrl+N</span></button>
             <input type="text" placeholder="Filter notes…" .value=${this.filter}
               @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)} />
             ${this.current?.manual_order ? html`<button @click=${() => this.resetOrder()}>By time</button>` : nothing}
@@ -1547,7 +1549,7 @@ export class App extends LitElement {
           ? html`<div class="empty detail-empty"><h3>No video selected</h3><p>Pick a video from the list, or paste a YouTube link above it.</p></div>`
           : this.view === "notes"
           ? html`<div class="notes" role="list" aria-label="Notes for this video" @click=${(e: Event) => this.onNotesClick(e)}>
-              ${filtered.length === 0 && !this.editing ? html`<div class="empty"><h3>${this.filter ? "No matching notes" : "No notes yet"}</h3><p>${this.filter ? "Try a different search." : html`Press <span class="kbd2">Alt&nbsp;+&nbsp;N</span> to capture a note at the current moment.`}</p></div>` : nothing}
+              ${filtered.length === 0 && !this.editing ? html`<div class="empty"><h3>${this.filter ? "No matching notes" : "No notes yet"}</h3><p>${this.filter ? "Try a different search." : html`Press <span class="kbd2">Ctrl&nbsp;+&nbsp;N</span> to capture a note at the current moment.`}</p></div>` : nothing}
               ${this.editing && !this.editing.id ? this.renderEditor() : nothing}
               ${repeat(filtered, (n) => n.id, (n) => (this.editing?.id === n.id ? this.renderEditor() : this.renderNote(n)))}
             </div>`
@@ -1584,7 +1586,7 @@ export class App extends LitElement {
       </div>` : nothing}
       ${this.cursorBox ? html`<div class="kbd-cur ${this.playerActive ? "playing" : ""}" style="transform:translate(${this.cursorBox.x}px,${this.cursorBox.y}px);width:${this.cursorBox.w}px;height:${this.cursorBox.h}px"></div>` : nothing}
       ${this.cursorBox && this.navHud ? html`
-        <div class="navhud" style="right:${this.navHud.side}px">
+        <div class="navhud">
           <span class="navhud-pane">${this.navHud.label}</span>
           <span class="navhud-keys">${this.playerActive
             ? html`<kbd>space</kbd> play · <kbd>j</kbd><kbd>l</kbd> ±10s · <kbd>←</kbd><kbd>→</kbd> seek · <kbd>esc</kbd> back`
@@ -1993,7 +1995,7 @@ export class App extends LitElement {
 
   private renderCheat() {
     const rows: [string, string][] = [
-      ["Alt+N", "Add note at the current moment"],
+      ["Ctrl+N", "Add note at the current moment"],
       ["Space / K", "Play / pause"],
       ["J / L", "Back / forward 10s"],
       ["← / →", "Back / forward 5s  (Shift = 30s)"],
@@ -2121,8 +2123,8 @@ export class App extends LitElement {
       box-shadow:0 0 0 2px var(--kbd-cursor), 0 0 0 5px color-mix(in srgb, var(--kbd-cursor) 22%, transparent), 0 6px 22px color-mix(in srgb, var(--kbd-cursor) 28%, transparent); }
     .kbd-cur.playing { box-shadow:0 0 0 2px var(--accent), 0 0 0 6px color-mix(in srgb, var(--accent) 26%, transparent), 0 8px 26px color-mix(in srgb, var(--accent) 32%, transparent); }
     @media (prefers-reduced-motion: reduce) { .kbd-cur { transition:none; } }
-    /* Nav HUD — flexes to the edge of whichever pane is keyboard-driven. */
-    .navhud { position:fixed; bottom:16px; z-index:55; display:flex; flex-direction:column; gap:4px;
+    /* Nav HUD — pinned to the bottom-right corner. */
+    .navhud { position:fixed; bottom:16px; right:16px; z-index:55; display:flex; flex-direction:column; gap:4px;
       padding:8px 12px; border-radius:10px; pointer-events:none;
       background:color-mix(in srgb, var(--bg-elevated) 94%, transparent); backdrop-filter:blur(12px);
       border:1px solid var(--border); box-shadow:0 12px 34px rgba(0,0,0,.45);
@@ -2203,7 +2205,7 @@ export class App extends LitElement {
       border:1px solid var(--border); color:var(--fg-muted); display:inline-flex; align-items:center; gap:5px; transition:color .12s, border-color .12s; }
     .chip:hover { color:var(--fg-default); }
     .chip.on { background:var(--tint); border-color:var(--accent); color:var(--accent); }
-    .vtags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:flex-end; margin-top:-4px; }
+    .vtags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:flex-start; margin-top:-4px; }
     .chip.tag { color:var(--fg-default); cursor:default; background:var(--tag-color, rgba(203,166,247,0.12)); }
     .tag-chip-wrap { position:relative; }
     .tag-chip-body { cursor:pointer; }
@@ -2269,7 +2271,9 @@ export class App extends LitElement {
     .appbar input { flex:1; }
     .ham { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--fg-muted); cursor:pointer; padding:6px; border-radius:var(--r-sm); flex:0 0 auto; }
     .ham:hover { background:var(--hover); color:var(--fg-default); }
-    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; padding:10px; margin:-10px; border:none; cursor:pointer; transition:background var(--ui-motion-fast), box-shadow var(--ui-motion-fast); }
+    .hdot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); flex:0 0 auto; position:relative; padding:0; border:none; cursor:pointer; transition:background var(--ui-motion-fast), box-shadow var(--ui-motion-fast); }
+    /* Keep the 9px dot, but expand the clickable area to ~25px (WCAG 2.5.8) via a transparent overlay — no visual change. */
+    .hdot::after { content:""; position:absolute; inset:-8px; border-radius:50%; }
     .hdot:hover { box-shadow:0 0 0 3px color-mix(in srgb, var(--fg-default) 16%, transparent); }
     .hdot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
     .hdot.warn { background:var(--warn); box-shadow:0 0 8px color-mix(in srgb, var(--warn) 70%, transparent); }

@@ -175,7 +175,7 @@ element is mis-styled, and no global stylesheet to grep across.
 
 A single capture-phase `keydown` listener (`onKey`) implements every shortcut —
 modal escape, transport (space / `k` / `j` / `l` / arrows / digits for seek),
-playback rate (`+` / `-`), note navigation, capture (`Alt+N`), search (`/`), and
+playback rate (`+` / `-`), note navigation, capture (`Ctrl+N`), search (`/`), and
 the cheat sheet (`?`). It early-returns when the user is typing in an
 `INPUT`/`TEXTAREA`/`SELECT` or a modal is open, so shortcuts never fire mid-edit.
 The authoritative list is [keyboard_shortcuts.md](../user-guide/keyboard_shortcuts.md);
@@ -331,7 +331,7 @@ playerVars: {
 - `enablejsapi: 1` — lets us drive the player from JS (the whole point of this
   wrapper).
 - `fs: 0` — **hides YouTube's own fullscreen button on purpose**, so our `f`
-  shortcut fullscreens `#playerWrap` instead and the `Alt+N` note overlay can
+  shortcut fullscreens `#playerWrap` instead and the `Ctrl+N` note overlay can
   render on top of the fullscreened video.
 - `rel: 0`, `playsinline: 1`, `origin` — restrict related videos, allow inline
   playback, and pin the embed origin.
