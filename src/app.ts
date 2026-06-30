@@ -425,11 +425,22 @@ export class App extends LitElement {
       this.phonemeCompatible = p.compatible;
       this.phonemeVersion = p.version;
       this.phonemePath = p.path;
-      // Pull Phoneme's tag colors when the daemon (re)appears.
-      if (p.daemon_ok && !this.prevDaemonOk) { this.refreshTagColors(); this.flushPendingTags(); this.refreshRecipes(); }
+      if (p.daemon_ok && !this.prevDaemonOk) {
+        // Daemon (re)appeared — pull catalog state, then reconnect the live view.
+        this.refreshTagColors(); this.flushPendingTags(); this.refreshRecipes();
+        // Drop any stale bridge (the old `phoneme watch` died with the daemon), then
+        // resume the open recording — refreshPhoneme re-arms `phoneme watch` if it's
+        // still in flight, or loads the finished transcript.
+        if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
+        if (this.recId()) this.refreshPhoneme();
+      } else if (!p.daemon_ok && this.prevDaemonOk) {
+        // Daemon went away — tear the bridge down so it re-arms cleanly on return.
+        if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
+      }
       this.prevDaemonOk = p.daemon_ok;
     } catch {
       this.phonemeOk = false; this.phonemePresent = false; this.prevDaemonOk = false;
+      if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
     }
   }
 
@@ -955,13 +966,12 @@ export class App extends LitElement {
     catch (e) {
       clearTimeout(this.pollTimer);
       const msg = String(e);
-      // The daemon is up (phonemeOk) but the linked recording no longer resolves
-      // → a dead ext_ref. Offer to unlink rather than leaving a broken link.
-      if (this.phonemeOk && /not\s*found|no\s+recording|unknown/i.test(msg)) {
-        this.offerUnlinkDeadRef();
-      } else {
-        this.flash(msg, "err");
-      }
+      // Daemon down / restarting → stay quiet; probePhoneme reconnects and resumes
+      // the poll when it returns (don't nag with an error or offer to unlink).
+      if (!this.phonemeOk || /reach|connect|refus|pipe|timed out|cli not found/i.test(msg)) return;
+      // Daemon healthy but the linked recording no longer resolves → a dead ext_ref.
+      if (/not\s*found|no\s+recording|unknown/i.test(msg)) this.offerUnlinkDeadRef();
+      else this.flash(msg, "err");
       return;
     }
     if (/^(done|.*_failed|cancelled)$/.test(this.phonemeRec.status)) {
