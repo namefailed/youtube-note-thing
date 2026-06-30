@@ -128,10 +128,16 @@ function normChord(e: KeyboardEvent): string {
   const mod = (e.ctrlKey || e.metaKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "") + (e.shiftKey && named ? "shift+" : "");
   return mod + k;
 }
-/** Pretty-print a chord for the UI: "ctrl+n" → "Ctrl+N", "arrowleft" → "←". */
+/** Pretty-print a chord for the UI: "ctrl+n" → "Ctrl+N", "arrowleft" → "←", "+" → "+". */
 function chordLabel(c: string): string {
   const map: Record<string, string> = { ctrl: "Ctrl", shift: "Shift", alt: "Alt", space: "Space", arrowleft: "←", arrowright: "→", arrowup: "↑", arrowdown: "↓", enter: "↵", delete: "Del" };
-  return c.split("+").map((p) => map[p] ?? (p.length === 1 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1))).join("+");
+  const parts = c.split("+");
+  // "+" is both the separator and a literal key: a trailing empty segment is the "+" key.
+  if (parts.length > 1 && parts[parts.length - 1] === "") { parts.pop(); parts[parts.length - 1] = "+"; }
+  return parts
+    .filter((p) => p !== "")
+    .map((p) => map[p] ?? (p.length === 1 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1)))
+    .join("+");
 }
 function actionLabel(id: KeyAction): string { return KEY_ACTIONS.find((a) => a.id === id)?.label ?? id; }
 /** One Diagnostics ("ytnt doctor") check, mirroring Phoneme's CheckResult shape. */
@@ -1715,12 +1721,12 @@ export class App extends LitElement {
           : this.renderTranscript()}
       </main>
 
-      ${this.searchOpen ? this.renderSearch() : nothing}
-      ${this.settingsOpen ? this.renderSettings() : nothing}
-      ${this.cheatOpen ? this.renderCheat() : nothing}
-      ${this.findReplaceOpen ? this.renderFindReplace() : nothing}
-      ${this.tagMgrOpen ? this.renderTagManager() : nothing}
-      ${this.doctorOpen ? this.renderDoctor() : nothing}
+      ${this.searchOpen ? this._guard(() => this.renderSearch()) : nothing}
+      ${this.settingsOpen ? this._guard(() => this.renderSettings()) : nothing}
+      ${this.cheatOpen ? this._guard(() => this.renderCheat()) : nothing}
+      ${this.findReplaceOpen ? this._guard(() => this.renderFindReplace()) : nothing}
+      ${this.tagMgrOpen ? this._guard(() => this.renderTagManager()) : nothing}
+      ${this.doctorOpen ? this._guard(() => this.renderDoctor()) : nothing}
       ${this.confirmBox ? this.renderConfirm() : nothing}
       ${this.selected.size ? html`<div class="bulkbar" style=${this.bulkPos
           ? `left:${this.bulkPos.x}px; top:${this.bulkPos.y}px;`
@@ -1906,6 +1912,21 @@ export class App extends LitElement {
         </div>` : html`<div class="muted sm" style="padding:14px 0;text-align:center">No tags yet. Add tags from a video's detail panel.</div>`}
       </div>
     </div>`;
+  }
+  /** Error boundary for modal renders: surface an exception in the overlay instead
+   *  of letting render() throw and the click silently no-op. */
+  private _guard(fn: () => unknown) {
+    try { return fn(); }
+    catch (e) {
+      const err = String((e as { stack?: string })?.stack || e);
+      // eslint-disable-next-line no-console
+      console.error("modal render threw:", e);
+      return html`<div class="overlay" @click=${() => this.closeModal()}>
+        <div class="panel" @click=${(ev: Event) => ev.stopPropagation()}>
+          <div class="panel-head"><span>Render error</span><button class="ghost" @click=${() => this.closeModal()}>${I.close}</button></div>
+          <pre style="white-space:pre-wrap;font-size:11px;line-height:1.45;padding:10px;color:var(--err);max-height:60vh;overflow:auto">${err}</pre>
+        </div></div>`;
+    }
   }
   private renderSettings() {
     return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
