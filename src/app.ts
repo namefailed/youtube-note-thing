@@ -201,6 +201,8 @@ export class App extends LitElement {
   private chordHint(a: KeyAction): string { const c = this.activeKeymap()[a]; return c.length ? chordLabel(c[0]) : "—"; }
   @state() private kbdIndex = -1;            // video-list keyboard cursor (-1 = none)
   private displayVids: VideoWithCount[] = []; // filtered/sorted library list render() paints (see willUpdate)
+  private sortedTags: string[] = [];          // sorted distinct tags; recomputed only when `videos` changes
+  private tagCounts = new Map<string, number>(); // tag → video count; recomputed with sortedTags
   private navVids: VideoWithCount[] = [];    // displayed video list, in DOM order (cursor indexes this)
   private seenVidIds = new Set<string>();    // one-shot row-enter animation bookkeeping
   private freshVidIds = new Set<string>();
@@ -224,14 +226,13 @@ export class App extends LitElement {
       e.preventDefault(); e.stopPropagation();
       if (e.key === "Escape") { this.capturingAction = null; return; }
       const ch = normChord(e);
-      if (RESERVED_CHORDS.has(ch)) { this.flash("That key is reserved for navigation", "err"); return; }
+      if (RESERVED_CHORDS.has(ch) || /^[0-9]$/.test(e.key)) { this.flash("That key is reserved for navigation", "err"); return; }
       const owner = this.keyAction(ch);
       if (owner && owner !== this.capturingAction) { this.flash(`${chordLabel(ch)} is already used by “${actionLabel(owner)}”`, "err"); return; }
       this.setBinding(this.capturingAction, ch);
       this.capturingAction = null;
       return;
     }
-    if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") this.keyboardMode = true;
     if (e.key === "Escape" && this.modal) { this.closeModal(); return; }
     const chord = normChord(e);
     const act = this.keyAction(chord);
@@ -240,11 +241,11 @@ export class App extends LitElement {
     if (e.key === "Escape" && this.fsNote) { e.preventDefault(); this.fsCancel(); return; }
     // While the video list holds focus, its own keydown owns the navigation keys —
     // the player must not also act on j/k/Space/arrows then.
-    if (this.navActive && (e.composedPath()[0] as HTMLElement)?.closest?.(".lib") &&
-        (((e.key === "ArrowUp" || e.key === "ArrowDown") && this.arrowNav) || ((e.key === "j" || e.key === "k") && this.vimNav)
-         || e.key === "Home" || e.key === "End" || e.key === "Enter" || e.key === " ")) return;
+    if (this.listOwnsKey(e) && (e.composedPath()[0] as HTMLElement)?.closest?.(".lib")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
     if (typing || this.modal || this.confirmBox || this.fsNote) return;
+    // Only a handled (non-typing) keystroke arms the keyboard cursor.
+    if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") this.keyboardMode = true;
     if (e.key === "Escape" && this.playerActive) { e.preventDefault(); this.playerActive = false; this.cursorToPlayer(); this.placeCursor(true); return; }
     if (e.key === "Escape" && this.focusedPane) { e.preventDefault(); this.focusedPane = null; this.cursorBox = null; this.navHud = null; ((this.renderRoot as ShadowRoot).activeElement as HTMLElement | null)?.blur?.(); return; }
     // Global actions (fire regardless of player / nav state).
@@ -338,6 +339,7 @@ export class App extends LitElement {
     window.removeEventListener("pointerdown", this.onPointer, true);
     clearInterval(this.probeTimer);
     clearTimeout(this.pollTimer);
+    clearTimeout(this._searchTimer);
     this.unlistenPhoneme?.();
     if (this.liveOn) { this.liveOn = false; api.phonemeWatchStop().catch(() => {}); }
   }
@@ -530,7 +532,12 @@ export class App extends LitElement {
   }
   private onTitle(title: string) {
     const v = this.current;
-    if (v && v.id === this._titleVideoId && !v.title) api.setVideoTitle(v.id, title).then(() => this.refreshVideos());
+    if (v && v.id === this._titleVideoId && !v.title) {
+      // One-shot: clear the latch synchronously so the burst of state-change events
+      // right after cue/play can't each fire a redundant write before the round-trip.
+      this._titleVideoId = null;
+      api.setVideoTitle(v.id, title).then(() => this.refreshVideos());
+    }
   }
 
   private async refreshVideos() { this.videos = await api.listVideos(); }
@@ -704,6 +711,22 @@ export class App extends LitElement {
   }
 
   // ── Modal focus management (a11y) ────────────────────────────────────────
+  /** Shared overlay + dialog panel shell for every modal — single-sources the
+   *  close-on-backdrop, Tab-trap and dialog/aria contract. `head` is the optional
+   *  `.panel-head` element (search has none; doctor supplies a bespoke one). */
+  private modalShell(label: string, head: unknown, body: unknown) {
+    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
+      <div class="panel" role="dialog" aria-modal="true" aria-label=${label} @click=${(e: Event) => e.stopPropagation()}>
+        ${head ?? nothing}
+        ${body}
+      </div>
+    </div>`;
+  }
+  /** The standard single-close-button panel head used by most modals. */
+  private modalHead(title: string) {
+    return html`<div class="panel-head"><span>${title}</span>
+      <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>`;
+  }
   private focusables(): HTMLElement[] {
     const panel = this.renderRoot.querySelector(".overlay .panel") as HTMLElement | null;
     if (!panel) return [];
@@ -721,6 +744,7 @@ export class App extends LitElement {
   /** Animated modal close: fade/slide the overlay out, then unmount after the motion. */
   private closeModal() {
     if (this.modalClosing) return;
+    clearTimeout(this._searchTimer);
     const finish = () => {
       this.closeTimer = 0; this.modalClosing = false;
       this.modal = null;
@@ -736,6 +760,7 @@ export class App extends LitElement {
   private confirm(message: string, opts: { title?: string; confirmLabel?: string; kind?: "warning" | "danger" } = {}): Promise<boolean> {
     return new Promise((resolve) => {
       this.confirmResolve = resolve;
+      this.lastFocus = ((this.renderRoot as ShadowRoot).activeElement as HTMLElement) ?? null;
       this.confirmBox = { message, title: opts.title ?? "Are you sure?", confirmLabel: opts.confirmLabel ?? "Confirm", kind: opts.kind ?? "warning" };
       this.updateComplete.then(() => {
         const sel = opts.kind === "danger" ? ".confirm-cancel" : ".confirm-yes";
@@ -746,6 +771,8 @@ export class App extends LitElement {
   private answerConfirm(v: boolean) {
     this.confirmBox = null;
     const r = this.confirmResolve; this.confirmResolve = null;
+    const target = this.lastFocus; this.lastFocus = null;
+    this.updateComplete.then(() => { try { target?.focus(); } catch { /* trigger gone */ } });
     r?.(v);
   }
   private trapTab(e: KeyboardEvent) {
@@ -827,8 +854,7 @@ export class App extends LitElement {
 
   // ── Phoneme integration (optional) ──────────────────────────────────────
   private recId(): string | null {
-    const r = parseRef(this.current?.ext_ref);
-    return r && r.integration === "phoneme" ? r.ref : null;
+    return this.current ? this.phonemeRef(this.current) : null;
   }
   private async setRecId(rec: string) {
     if (!this.currentId) return;
@@ -968,7 +994,7 @@ export class App extends LitElement {
       if (note.content.includes(find)) { await api.updateNote(note.id, note.content.split(find).join(repl)); n++; }
     }
     await this.refreshNotes();
-    this.modal = null;
+    this.closeModal();
     this.flash(n ? `Replaced in ${n} note${n > 1 ? "s" : ""}` : "No matches", n ? "ok" : "info");
   }
   private toggleSelect(id: string) {
@@ -976,11 +1002,22 @@ export class App extends LitElement {
     if (s.has(id)) s.delete(id); else s.add(id);
     this.selected = s;
   }
+  /** Which keys the focused video list owns (gated by the active nav layer), so
+   *  `onKey`'s player/global routing and `onListKey` agree on one source of truth.
+   *  Escape is list-owned only when there's a selection to clear — otherwise it
+   *  falls through to the global Esc handler (blur the pane). */
+  private listOwnsKey(e: KeyboardEvent): boolean {
+    if (!this.navActive) return false;
+    return ((e.key === "ArrowUp" || e.key === "ArrowDown") && this.arrowNav)
+      || ((e.key === "j" || e.key === "k") && this.vimNav)
+      || e.key === "Home" || e.key === "End" || e.key === "Enter" || e.key === " "
+      || (e.key === "Escape" && this.selected.size > 0);
+  }
   /** Video-list keyboard cursor — runs only while `.lib` is focused, so it never
    *  competes with the player's global j/k/space. Arrows (+ j/k aliases), Home/End
    *  move; Enter opens; Space toggles bulk-select; Esc clears the selection. */
   private onListKey(e: KeyboardEvent) {
-    if (!this.navActive) return;
+    if (!this.listOwnsKey(e)) return;
     let key = "";
     if ((e.key === "ArrowDown" || e.key === "ArrowUp") && this.arrowNav) key = e.key;
     else if (e.key === "j" && this.vimNav) key = "ArrowDown";
@@ -1050,7 +1087,6 @@ export class App extends LitElement {
     e.preventDefault(); this.activateGridCell(); return true;
   }
   // ── Spatial hjkl grid over the sidebar / detail pane (the list uses kbdIndex). ──
-  // Interactive elements reachable via spatial nav (hjkl); update deliberately when adding nav-reachable elements.
   // Elements reachable via spatial nav (hjkl/arrows). Update deliberately when adding nav-reachable controls.
   private GRID_SEL = "#playerWrap,button:not([disabled]),summary,input:not([type='hidden']):not([disabled]),.np-title,.tag-chip-body";
   private PANE_ORDER: Array<"sidebar" | "list" | "detail"> = ["sidebar", "list", "detail"];
@@ -1332,9 +1368,8 @@ export class App extends LitElement {
     const navRelevant = ["focusedPane", "keyboardMode", "cursorBox", "navHud", "sidebarOpen", "listOpen", "playerActive"];
     if (navRelevant.some((k) => changed.has(k))) this.placeCursor(false);
   }
-  private allTags(): string[] {
-    return [...new Set(this.videos.flatMap((v) => v.tags))].sort((a, b) => a.localeCompare(b));
-  }
+  /** Sorted distinct tags — cached in willUpdate, recomputed only when `videos` changes. */
+  private allTags(): string[] { return this.sortedTags; }
   private async addTag(name: string) {
     const v = this.current; const t = name.trim();
     if (!v || !t || v.tags.includes(t)) return;
@@ -1392,6 +1427,14 @@ export class App extends LitElement {
   // stash it (plus the nav cursor / fresh-row bookkeeping) so render() stays a pure
   // read. willUpdate runs before render(), so navVids is set before the cursor uses it.
   willUpdate(changed: PropertyValues) {
+    if (changed.has("videos")) {
+      // Sorted tag list + per-tag video counts in one pass — read by the sidebar
+      // in render() instead of an O(tags × videos) rescan on every unrelated render.
+      const counts = new Map<string, number>();
+      for (const v of this.videos) for (const t of v.tags) counts.set(t, (counts.get(t) ?? 0) + 1);
+      this.tagCounts = counts;
+      this.sortedTags = [...counts.keys()].sort((a, b) => a.localeCompare(b));
+    }
     if (changed.has("videos") || changed.has("libView") || changed.has("tagFilter")
         || changed.has("sortDesc") || changed.has("libQuery")) {
       let vids = this.videos;
@@ -1407,6 +1450,13 @@ export class App extends LitElement {
       vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
       this.displayVids = vids;
       this.navVids = vids;                                         // the list cursor + Enter index this
+      // A shrunk filter can leave kbdIndex past the end; clamp so the overlay cursor
+      // stays on a real row instead of vanishing until the next j/k nudge. Re-place
+      // after render so it measures the new list, not the rows about to be removed.
+      if (this.kbdIndex >= this.navVids.length) {
+        this.kbdIndex = this.navVids.length - 1;
+        this.updateComplete.then(() => this.placeCursor(true));
+      }
       this.freshVidIds = new Set(vids.filter((v) => !this.seenVidIds.has(v.id)).map((v) => v.id));
       for (const v of vids) this.seenVidIds.add(v.id);             // one-shot: only genuinely-new rows animate in
     }
@@ -1419,12 +1469,12 @@ export class App extends LitElement {
     const untaggedCount = this.videos.filter((v) => v.tags.length === 0).length;
     const taggedCount = this.videos.length - untaggedCount;
     const vids = this.displayVids;
-    const trapped = !!this.modal;
+    const trapped = !!this.modal || !!this.confirmBox;
     return html`
       <header class="appbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
         <button class="ham" title="Toggle filters" aria-label="Toggle filters" @click=${() => this.toggleSidebar()}>${I.menu}</button>
         <button class="ham ${this.listOpen ? "" : "off"}" title="Toggle library list" aria-label="Toggle library" @click=${() => this.toggleList()}>${I.list}</button>
-        <input id="url" type="text" placeholder="Search your library, or paste a link…" autocomplete="off"
+        <input id="url" type="search" aria-label="Search your library or paste a YouTube link" placeholder="Search your library, or paste a link…" autocomplete="off"
           .value=${this.libQuery}
           @input=${(e: Event) => (this.libQuery = (e.target as HTMLInputElement).value)}
           @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") this.omniSubmit(); }} />
@@ -1451,7 +1501,7 @@ export class App extends LitElement {
               @click=${() => { this.libView = "all"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">${I.film}</span><span class="si-label">All videos</span><span class="count">${this.videos.length}</span>
             </button>
-            <button class="sidebar-item ${this.libView === "transcript" ? "on" : ""}"
+            <button class="sidebar-item ${this.libView === "transcript" && !this.tagFilter ? "on" : ""}"
               aria-pressed=${this.libView ==="transcript" && !this.tagFilter}
               @click=${() => { this.libView = "transcript"; this.tagFilter = null; this.plFilter = null; }}>
               <span class="si-icon">${I.captions}</span><span class="si-label">With transcript</span><span class="count">${transcriptCount}</span>
@@ -1480,11 +1530,11 @@ export class App extends LitElement {
               <span class="count">${taggedCount}</span>
             </button>
             ${tags.map((t) => html`
-            <button class="sidebar-item ${this.tagFilter === t ? "on" : ""}"
+            <button class="sidebar-item ${this.tagFilter === t ? "on" : ""}" aria-pressed=${this.tagFilter === t}
               @click=${() => { this.plFilter = null; this.libView = "all"; this.tagFilter = this.tagFilter === t ? null : t; }}>
               <span class="si-icon tag-hash">#</span><span class="si-label">${t}</span>
               <span class="tag-dot" style="background:${this.dotColor(t)}"></span>
-              <span class="count">${this.videos.filter((v) => v.tags.includes(t)).length}</span>
+              <span class="count">${this.tagCounts.get(t) ?? 0}</span>
             </button>`)}` : nothing}
         </div>` : nothing}
         ${this.googleConnected && this.gplaylists.length ? html`<div class="section">
@@ -1504,7 +1554,7 @@ export class App extends LitElement {
             </details>
           </div>
           ${!this.folds.pl ? this.gplaylists.filter((p) => !this.settings.hiddenPlaylists.includes(p.id)).map((p) => html`
-            <button class="sidebar-item ${this.plFilter?.id === p.id ? "on" : ""}" title=${`Browse “${p.title}” (${p.count})`} @click=${() => this.openPlaylist(p)}>
+            <button class="sidebar-item ${this.plFilter?.id === p.id ? "on" : ""}" aria-pressed=${this.plFilter?.id === p.id} title=${`Browse “${p.title}” (${p.count})`} @click=${() => this.openPlaylist(p)}>
               <span class="si-icon">${I.list}</span><span class="si-label">${p.title}</span><span class="count">${p.count}</span>
             </button>`) : nothing}
         </div>` : nothing}
@@ -1562,10 +1612,7 @@ export class App extends LitElement {
             <div class="fs-note-card" role="dialog" aria-modal="true" aria-label="Add note">
               <div class="fs-note-head"><span class="ts">${formatTime(this.fsNote.t)}</span><span class="muted sm">Note at this moment</span></div>
               <textarea id="fsNoteInput" placeholder="Write a note… Markdown supported."
-                @keydown=${(e: KeyboardEvent) => {
-                  if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.key.toLowerCase() === "s")) { e.preventDefault(); this.fsCommit((e.target as HTMLTextAreaElement).value); }
-                  else if (e.key === "Escape") { e.preventDefault(); this.fsCancel(); }
-                }}></textarea>
+                @keydown=${(e: KeyboardEvent) => this.noteKeydown(e, (v) => this.fsCommit(v), () => this.fsCancel())}></textarea>
               <div class="fs-note-foot">
                 <span class="muted sm">Ctrl+Enter to save · Esc to cancel</span>
                 <span class="grow"></span>
@@ -1683,9 +1730,9 @@ export class App extends LitElement {
       ${this.toasts.length ? html`<div class="toasts">
         ${this.toasts.map((t) => html`<div class="toast ${t.kind} ${t.out ? "out" : ""}" role=${t.kind === "err" ? "alert" : "status"} aria-live=${t.kind === "err" ? "assertive" : "polite"}><span class="ti">${t.kind === "ok" ? "✓" : t.kind === "err" ? "✕" : "i"}</span><span>${t.msg}</span></div>`)}
       </div>` : nothing}
-      ${this.cursorBox ? html`<div class="kbd-cur ${this.playerActive ? "playing" : ""}" style="transform:translate(${this.cursorBox.x}px,${this.cursorBox.y}px);width:${this.cursorBox.w}px;height:${this.cursorBox.h}px"></div>` : nothing}
+      ${this.cursorBox ? html`<div class="kbd-cur ${this.playerActive ? "playing" : ""}" aria-hidden="true" style="transform:translate(${this.cursorBox.x}px,${this.cursorBox.y}px);width:${this.cursorBox.w}px;height:${this.cursorBox.h}px"></div>` : nothing}
       ${this.cursorBox && this.navHud ? html`
-        <div class="navhud">
+        <div class="navhud" role="status">
           <span class="navhud-pane">${this.navHud.label}</span>
           <span class="navhud-keys">${this.playerActive
             ? html`<kbd>space</kbd> play · <kbd>j</kbd><kbd>l</kbd> ±10s · <kbd>←</kbd><kbd>→</kbd> seek · <kbd>esc</kbd> back`
@@ -1694,16 +1741,18 @@ export class App extends LitElement {
     `;
   }
 
+  /** Shared note-textarea key contract: Ctrl/Cmd+Enter or Ctrl/Cmd+S saves, Esc cancels. */
+  private noteKeydown(ev: KeyboardEvent, save: (v: string) => void, cancel: () => void) {
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "Enter" || ev.key.toLowerCase() === "s")) { ev.preventDefault(); save((ev.target as HTMLTextAreaElement).value); }
+    else if (ev.key === "Escape") { ev.preventDefault(); cancel(); }
+  }
   private renderEditor() {
     const e = this.editing!;
     return html`<div id="editor" class="note">
       <span class="ts">${formatTime(e.t)}</span>
       <div class="grow">
         <textarea placeholder="Write a note… Markdown supported." .value=${e.draft}
-          @keydown=${(ev: KeyboardEvent) => {
-            if ((ev.ctrlKey || ev.metaKey) && (ev.key === "Enter" || ev.key.toLowerCase() === "s")) { ev.preventDefault(); this.commit((ev.target as HTMLTextAreaElement).value); }
-            else if (ev.key === "Escape") { ev.preventDefault(); this.cancel(); }
-          }}></textarea>
+          @keydown=${(ev: KeyboardEvent) => this.noteKeydown(ev, (v) => this.commit(v), () => this.cancel())}></textarea>
         <div class="muted sm" style="margin-top:5px">Ctrl+Enter / Ctrl+S to save · Esc to cancel</div>
       </div>
     </div>`;
@@ -1729,9 +1778,8 @@ export class App extends LitElement {
   }
 
   private renderSearch() {
-    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
-      <div class="panel" role="dialog" aria-modal="true" aria-label="Search notes" @click=${(e: Event) => e.stopPropagation()}>
-        <div class="sbar">${I.search}<input type="text" placeholder="Search all notes…"
+    return this.modalShell("Search notes", null, html`
+        <div class="sbar">${I.search}<input type="search" aria-label="Search all notes" placeholder="Search all notes…"
           @input=${(e: Event) => { const q = (e.target as HTMLInputElement).value; clearTimeout(this._searchTimer); this._searchTimer = setTimeout(() => this.runSearch(q), 250); }} /></div>
         <div class="results">
           ${this.searchResults.map((h) => html`<button class="hit" @click=${() => this.openHit(h)}>
@@ -1743,9 +1791,7 @@ export class App extends LitElement {
               <span class="grow"><span class="htitle">${h.title || h.id}</span>${h.snippet ? html` — ${h.snippet}` : nothing}</span>
             </button>`)}` : nothing}
           ${this.searchResults.length === 0 && this.phonemeHits.length === 0 ? html`<div class="muted sm" style="padding:8px">No matches.</div>` : nothing}
-        </div>
-      </div>
-    </div>`;
+        </div>`);
   }
 
   /** Diagnostics checks ("ytnt doctor"), computed from the live probe + account
@@ -1779,13 +1825,13 @@ export class App extends LitElement {
     const checks = this.doctorChecks();
     const issues = checks.filter((c) => !c.ok).length;
     const catLabel = (c: "critical" | "warning" | "info") => (c === "critical" ? "Critical" : c === "warning" ? "Warning" : "Info");
-    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
-      <div class="panel" role="dialog" aria-modal="true" aria-label="Diagnostics" @click=${(e: Event) => e.stopPropagation()}>
-        <div class="panel-head"><span>Diagnostics</span>
+    return this.modalShell("Diagnostics",
+      html`<div class="panel-head"><span>Diagnostics</span>
           <span style="display:inline-flex;gap:2px">
             <button class="ghost" title="Re-check" aria-label="Re-check" @click=${() => this.probePhoneme()}>${I.replace}</button>
             <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button>
-          </span></div>
+          </span></div>`,
+      html`
         <div class="help muted sm">${issues
           ? `${issues} item${issues === 1 ? "" : "s"} to look at — all optional; ytnt works fully on its own.`
           : "All good — Phoneme and your YouTube account are connected (both optional)."}</div>
@@ -1798,14 +1844,12 @@ export class App extends LitElement {
             </div>
             ${c.fix ? html`<button class="btn doctor-fix" @click=${() => c.fix!.run()}>${c.fix.label}</button>` : nothing}
           </div>`)}
-        </div>
-      </div>
-    </div>`;
+        </div>`);
   }
   private renderConfirm() {
     const c = this.confirmBox!;
     return html`<div class="overlay confirm-overlay" @click=${() => this.answerConfirm(false)}
-      @keydown=${(e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); this.answerConfirm(false); } }}>
+      @keydown=${(e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); this.answerConfirm(false); } else this.trapTab(e); }}>
       <div class="panel confirm-box" role="alertdialog" aria-modal="true" aria-label=${c.title} @click=${(e: Event) => e.stopPropagation()}>
         <div class="confirm-title">${c.title}</div>
         <div class="confirm-msg">${c.message}</div>
@@ -1818,10 +1862,7 @@ export class App extends LitElement {
   }
   private renderTagManager() {
     const tags = this.allTags();
-    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
-      <div class="panel" role="dialog" aria-modal="true" aria-label="Tag manager" @click=${(e: Event) => e.stopPropagation()}>
-        <div class="panel-head"><span>Tag manager</span>
-          <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
+    return this.modalShell("Tag manager", this.modalHead("Tag manager"), html`
         <div class="tag-mgr-bar">
           <div class="help muted sm">Rename and recolor your tags. Changes are local; colors mirror from Phoneme, the catalog authority (delete and merge live there).</div>
           ${this.settings.syncTags ? html`<button class="btn" title=${this.phonemeOk ? "Pull + push tags for every video sent to Phoneme" : "Phoneme isn't running"}
@@ -1843,9 +1884,7 @@ export class App extends LitElement {
                 : html`<span class="tag-mgr-badge orphaned" title="Not on any video">unused</span>`}
             </div>`;
           })}
-        </div>` : html`<div class="muted sm" style="padding:14px 0;text-align:center">No tags yet. Add tags from a video's detail panel.</div>`}
-      </div>
-    </div>`;
+        </div>` : html`<div class="muted sm" style="padding:14px 0;text-align:center">No tags yet. Add tags from a video's detail panel.</div>`}`);
   }
   /** Error boundary for modal renders: surface an exception in the overlay instead
    *  of letting render() throw and the click silently no-op. */
@@ -1863,10 +1902,7 @@ export class App extends LitElement {
     }
   }
   private renderSettings() {
-    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
-      <div class="panel" role="dialog" aria-modal="true" aria-label="Settings" @click=${(e: Event) => e.stopPropagation()}>
-        <div class="panel-head"><span>Settings</span>
-          <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
+    return this.modalShell("Settings", this.modalHead("Settings"), html`
         <section class="settings-section">
           <h3>Appearance</h3>
           <label class="field"><span>Theme</span>
@@ -1907,7 +1943,7 @@ export class App extends LitElement {
             ${KEY_ACTIONS.map((a) => html`<div class="keymap-row">
               <span class="km-label">${a.label}</span>
               ${this.capturingAction === a.id
-                ? html`<span class="km-capturing">Press a key… <span class="muted sm">Esc cancels</span></span>`
+                ? html`<span class="km-capturing" aria-live="assertive">Press a key… <span class="muted sm">Esc cancels</span></span>`
                 : html`<span class="km-keys">${this.activeKeymap()[a.id].map((c) => html`<kbd>${chordLabel(c)}</kbd>`)}</span>`}
               <button class="ghost km-change" @click=${() => this.startCapture(a.id)} ?disabled=${this.capturingAction !== null && this.capturingAction !== a.id}>${this.capturingAction === a.id ? "Listening…" : "Change"}</button>
             </div>`)}
@@ -1981,9 +2017,7 @@ export class App extends LitElement {
           <div class="field"><span>App updates</span>
             <button @click=${() => this.checkUpdates()}>Check for updates</button></div>
         </section>
-        <div class="hint muted sm">Press <b>?</b> for keyboard shortcuts.</div>
-      </div>
-    </div>`;
+        <div class="hint muted sm">Press <b>?</b> for keyboard shortcuts.</div>`);
   }
 
   /** Loud inline notice when Phoneme is present but too old to trust its output. */
@@ -2026,7 +2060,7 @@ export class App extends LitElement {
     const terminal = /^(done|.*_failed|cancelled)$/.test(st);
     if (!st || !terminal) {
       return html`<div class="notes"><div class="empty src">
-        <div class="pl-stage">${st && st !== "done" ? html`<span class="spin"></span>` : nothing} ${st ? this.stageLabel(st) : "Checking Phoneme…"}</div>
+        <div class="pl-stage" role="status" aria-live="polite">${st && st !== "done" ? html`<span class="spin"></span>` : nothing} ${st ? this.stageLabel(st) : "Checking Phoneme…"}</div>
         <button @click=${() => this.refreshPhoneme()}>Refresh</button>
         <button @click=${() => this.loadCaptions()}>YouTube captions meanwhile</button>
       </div></div>`;
@@ -2111,10 +2145,7 @@ export class App extends LitElement {
   }
 
   private renderFindReplace() {
-    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
-      <div class="panel" role="dialog" aria-modal="true" aria-label="Find and replace" @click=${(e: Event) => e.stopPropagation()}>
-        <div class="panel-head"><span>Find &amp; replace in notes</span>
-          <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
+    return this.modalShell("Find and replace", this.modalHead("Find & replace in notes"), html`
         <label class="field col"><span>Find</span><input id="fr-find" type="text" placeholder="text to find" /></label>
         <label class="field col"><span>Replace with</span><input id="fr-repl" type="text" placeholder="replacement (blank to delete)" /></label>
         <div class="row2"><span class="grow"></span>
@@ -2122,9 +2153,7 @@ export class App extends LitElement {
             (this.renderRoot.querySelector("#fr-find") as HTMLInputElement)?.value || "",
             (this.renderRoot.querySelector("#fr-repl") as HTMLInputElement)?.value || "",
           )}>Replace all</button></div>
-        <div class="muted sm">Literal replace across this video’s notes.</div>
-      </div>
-    </div>`;
+        <div class="muted sm">Literal replace across this video’s notes.</div>`);
   }
 
   private renderCheat() {
@@ -2157,15 +2186,10 @@ export class App extends LitElement {
       [kh("cheat"), "Keyboard shortcuts (this)"],
       ["Esc", "Close dialog / cancel"],
     ];
-    return html`<div class="overlay ${this.modalClosing ? "closing" : ""}" @click=${() => this.closeModal()} @keydown=${(e: KeyboardEvent) => this.trapTab(e)}>
-      <div class="panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" @click=${(e: Event) => e.stopPropagation()}>
-        <div class="panel-head"><span>Keyboard shortcuts</span>
-          <button class="ghost" title="Close" @click=${() => this.closeModal()}>${I.close}</button></div>
+    return this.modalShell("Keyboard shortcuts", this.modalHead("Keyboard shortcuts"), html`
         <div class="cheat">
           ${rows.map(([k, d]) => html`<div class="cheat-row"><kbd>${k}</kbd><span>${d}</span></div>`)}
-        </div>
-      </div>
-    </div>`;
+        </div>`);
   }
 
   static styles = css`

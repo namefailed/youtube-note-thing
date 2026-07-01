@@ -174,7 +174,7 @@ A video's external-backend link is stored in **`videos.ext_ref`** as self-descri
 
 The helpers live in [`src/lib.ts`](../../src/lib.ts):
 
-- **`serializeRef(ref, integration = "phoneme")`** → the JSON string written via `set_ext_ref`.
+- **`serializeRef(ref)`** → the JSON string written via `set_ext_ref` (always `integration: "phoneme"`).
 - **`parseRef(extRef)`** → `{ integration, ref } | null`. It tolerates **legacy bare-string rows** (a plain recording id with no JSON wrapper) by treating them as `{ integration: "phoneme", ref: extRef }`.
 
 The frontend always checks `integration === "phoneme"` before using `ref` as a Phoneme recording id (`phonemeRef()`, `recId()`). **That guard is the whole reason a second backend can coexist** in the same column without a migration.
@@ -248,7 +248,7 @@ For the user-facing flow, see [YouTube account & playlists](../user-guide/youtub
 
 The `ext_ref` design exists so you can add another transcription/notes backend (say, a hypothetical `whisperx`) **without a schema change**. The shape to follow:
 
-1. **Pick an integration key** — the string stored in `ext_ref.integration` (e.g. `"whisperx"`). `parseRef` / `serializeRef` already carry it; `serializeRef(ref, "whisperx")` is all the write side needs.
+1. **Pick an integration key** — the string stored in `ext_ref.integration` (e.g. `"whisperx"`). `parseRef` already reads it back generically; `serializeRef` currently hardcodes `"phoneme"`, so give it an `integration` argument again (or add a sibling writer) for the new backend.
 2. **Add backend commands** in [`src-tauri/src/lib.rs`](../../src-tauri/src/lib.rs) mirroring the Phoneme set you need (availability probe, import, fetch transcript), and register them in the `invoke_handler!` list.
 3. **Wrap them** in [`src/api.ts`](../../src/api.ts) as typed `invoke` calls — camelCase JS keys map to snake_case Rust params automatically.
 4. **Branch on `integration`** in the frontend. The existing code already guards with `r.integration === "phoneme"` (`phonemeRef`, `recId`); add the parallel `=== "whisperx"` branch so a video linked to one backend never gets dispatched to the other.

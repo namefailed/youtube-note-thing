@@ -14,8 +14,8 @@ export function parseRef(extRef: string | null | undefined): ExtRef | null {
   } catch { /* not JSON — fall through to the legacy bare-string form */ }
   return { integration: "phoneme", ref: extRef };
 }
-export function serializeRef(ref: string, integration = "phoneme"): string {
-  return JSON.stringify({ integration, ref });
+export function serializeRef(ref: string): string {
+  return JSON.stringify({ integration: "phoneme", ref });
 }
 
 // --- Tags --------------------------------------------------------------------

@@ -49,7 +49,9 @@ export const KEYMAP_PRESETS: Record<string, Keymap> = {
     noteUp: ["k"], noteDown: ["j"], noteEdit: ["enter"], noteDelete: ["delete"],
   },
 };
-export const RESERVED_CHORDS = new Set(["escape", "tab", "g"]);
+// escape/tab/g are the structural nav keys; 0–9 are the fixed decile-seek keys
+// (Settings and the cheat sheet advertise them as unbindable), so none may be rebound.
+export const RESERVED_CHORDS = new Set(["escape", "tab", "g", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]);
 /** Normalize a keydown into a stable chord string. Shift is only encoded for named
  *  keys (Arrow*, Enter…); for printable chars the character already reflects shift. */
 export function normChord(e: KeyboardEvent): string {

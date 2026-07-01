@@ -31,15 +31,23 @@ export class Player {
   }
 
   private apiReady(): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       if (window.YT?.Player) return resolve();
       const prev = window.onYouTubeIframeAPIReady;
-      window.onYouTubeIframeAPIReady = () => { prev?.(); resolve(); };
+      const t = window.setTimeout(() => reject(new Error("iframe API load timed out")), 10_000);
+      window.onYouTubeIframeAPIReady = () => { clearTimeout(t); prev?.(); resolve(); };
     });
   }
 
   async load(videoId: string, startSeconds = 0) {
-    await this.apiReady();
+    try {
+      await this.apiReady();
+    } catch {
+      // Blocked/offline IFrame API would otherwise hang load() forever; surface it
+      // through the same error path a playback error uses (5 = "Playback error").
+      this.onError(5);
+      return;
+    }
     if (!this.yt) {
       this.yt = new window.YT.Player(this.el, {
         videoId,
@@ -50,7 +58,7 @@ export class Player {
           origin: location.origin, start: Math.floor(startSeconds),
         },
         events: {
-          onReady: () => this.startPoll(),
+          onReady: () => { this.el.querySelector("iframe")?.setAttribute("title", "YouTube video player"); this.startPoll(); },
           onStateChange: () => this.captureTitle(),
           onError: (e: any) => this.onError(e?.data),
         },
