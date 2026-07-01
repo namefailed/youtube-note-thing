@@ -6,6 +6,7 @@ import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR, mergeTagSets, formatViews, relativeDate } from "./lib";
 import { renderMarkdown } from "./markdown";
+import { type KeyAction, type Keymap, KEY_ACTIONS, KEYMAP_PRESETS, RESERVED_CHORDS, normChord, chordLabel, actionLabel, reverseKeymap } from "./keys";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
@@ -66,80 +67,6 @@ function themeLabel(slug: string): string {
 
 interface Settings { offset: number; autopause: boolean; vaultDir: string; theme: string; stripTitlebar: boolean; gClientId: string; gClientSecret: string; hiddenPlaylists: string[]; phonemeBin: string; syncTags: boolean; phonemeRecipe: string; vimNav: boolean; arrowNav: boolean; keymapPreset: string; keymapOverrides: Record<string, string[]>; }
 
-// ── Rebindable keyboard actions (the structural nav keys — hjkl, g-chords, Esc,
-// Tab — are deliberately NOT here; they ARE the navigation model). A binding is a
-// normalized chord string from normChord(): e.g. "ctrl+n", "space", "arrowleft",
-// "shift+arrowright", ">". Each action can have several default chords.
-type KeyAction =
-  | "playPause" | "back10" | "fwd10" | "back5" | "fwd5" | "back30" | "fwd30"
-  | "speedUp" | "speedDown" | "mute" | "fullscreen"
-  | "capture" | "search" | "cheat" | "sidebar"
-  | "noteUp" | "noteDown" | "noteEdit" | "noteDelete";
-type Keymap = Record<KeyAction, string[]>;
-const KEY_ACTIONS: { id: KeyAction; label: string; group: "Playback" | "Notes" | "App" }[] = [
-  { id: "playPause", label: "Play / pause", group: "Playback" },
-  { id: "back10", label: "Back 10 seconds", group: "Playback" },
-  { id: "fwd10", label: "Forward 10 seconds", group: "Playback" },
-  { id: "back5", label: "Back 5 seconds", group: "Playback" },
-  { id: "fwd5", label: "Forward 5 seconds", group: "Playback" },
-  { id: "back30", label: "Back 30 seconds", group: "Playback" },
-  { id: "fwd30", label: "Forward 30 seconds", group: "Playback" },
-  { id: "speedUp", label: "Speed up", group: "Playback" },
-  { id: "speedDown", label: "Slow down", group: "Playback" },
-  { id: "mute", label: "Mute / unmute", group: "Playback" },
-  { id: "fullscreen", label: "Fullscreen", group: "Playback" },
-  { id: "capture", label: "Add note", group: "App" },
-  { id: "search", label: "Search", group: "App" },
-  { id: "cheat", label: "Cheat sheet", group: "App" },
-  { id: "sidebar", label: "Toggle sidebar", group: "App" },
-  { id: "noteUp", label: "Previous note", group: "Notes" },
-  { id: "noteDown", label: "Next note", group: "Notes" },
-  { id: "noteEdit", label: "Edit selected note", group: "Notes" },
-  { id: "noteDelete", label: "Delete selected note", group: "Notes" },
-];
-const KEYMAP_PRESETS: Record<string, Keymap> = {
-  default: {
-    playPause: ["space", "k"], back10: ["j"], fwd10: ["l"], back5: ["arrowleft"], fwd5: ["arrowright"],
-    back30: ["shift+arrowleft"], fwd30: ["shift+arrowright"], speedUp: ["+", "="], speedDown: ["-", "_"],
-    mute: ["m"], fullscreen: ["f"], capture: ["ctrl+n"], search: ["/"], cheat: ["?"], sidebar: ["ctrl+b"],
-    noteUp: ["arrowup"], noteDown: ["arrowdown"], noteEdit: ["enter"], noteDelete: ["delete"],
-  },
-  youtube: {
-    playPause: ["k", "space"], back10: ["j"], fwd10: ["l"], back5: ["arrowleft"], fwd5: ["arrowright"],
-    back30: ["shift+arrowleft"], fwd30: ["shift+arrowright"], speedUp: [">"], speedDown: ["<"],
-    mute: ["m"], fullscreen: ["f"], capture: ["ctrl+n"], search: ["/"], cheat: ["?"], sidebar: ["ctrl+b"],
-    noteUp: ["arrowup"], noteDown: ["arrowdown"], noteEdit: ["enter"], noteDelete: ["delete"],
-  },
-  vim: {
-    playPause: ["space"], back10: ["b"], fwd10: ["w"], back5: ["h"], fwd5: ["l"],
-    back30: ["shift+h"], fwd30: ["shift+l"], speedUp: ["+", "="], speedDown: ["-", "_"],
-    mute: ["m"], fullscreen: ["f"], capture: ["ctrl+n"], search: ["/"], cheat: ["?"], sidebar: ["ctrl+b"],
-    noteUp: ["k"], noteDown: ["j"], noteEdit: ["enter"], noteDelete: ["delete"],
-  },
-};
-const RESERVED_CHORDS = new Set(["escape", "tab", "g"]);
-/** Normalize a keydown into a stable chord string. Shift is only encoded for named
- *  keys (Arrow*, Enter…); for printable chars the character already reflects shift. */
-function normChord(e: KeyboardEvent): string {
-  let k = e.key;
-  if (k === " ") k = "space";
-  const named = k.length > 1;
-  k = k.toLowerCase();
-  const mod = (e.ctrlKey || e.metaKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "") + (e.shiftKey && named ? "shift+" : "");
-  return mod + k;
-}
-/** Pretty-print a chord for the UI: "ctrl+n" → "Ctrl+N", "arrowleft" → "←", "+" → "+". */
-function chordLabel(c: string): string {
-  const map: Record<string, string> = { ctrl: "Ctrl", shift: "Shift", alt: "Alt", space: "Space", arrowleft: "←", arrowright: "→", arrowup: "↑", arrowdown: "↓", enter: "↵", delete: "Del" };
-  const parts = c.split("+");
-  // "+" is both the separator and a literal key: a trailing empty segment is the "+" key.
-  if (parts.length > 1 && parts[parts.length - 1] === "") { parts.pop(); parts[parts.length - 1] = "+"; }
-  return parts
-    .filter((p) => p !== "")
-    .map((p) => map[p] ?? (p.length === 1 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1)))
-    .join("+");
-}
-function actionLabel(id: KeyAction): string { return KEY_ACTIONS.find((a) => a.id === id)?.label ?? id; }
 /** One Diagnostics ("ytnt doctor") check, mirroring Phoneme's CheckResult shape. */
 type DoctorCheck = { name: string; ok: boolean; cat: "critical" | "warning" | "info"; detail: string; fix?: { label: string; run: () => void } };
 type Editing = { id?: string; t: number; draft: string } | null;
@@ -257,10 +184,7 @@ export class App extends LitElement {
   }
   private keyAction(chord: string): KeyAction | undefined {
     if (!this._keymapRev) {
-      const km = this.activeKeymap();
-      const rev: Record<string, KeyAction> = {};
-      for (const a of KEY_ACTIONS) for (const c of km[a.id]) rev[c] = a.id;
-      this._keymapRev = rev;
+      this._keymapRev = reverseKeymap(this.activeKeymap());
     }
     return this._keymapRev[chord];
   }
