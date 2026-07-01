@@ -1,4 +1,4 @@
-import { LitElement, html, css, svg, nothing } from "lit";
+import { LitElement, html, css, svg, nothing, type PropertyValues } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { repeat } from "lit/directives/repeat.js";
@@ -155,10 +155,9 @@ export class App extends LitElement {
   @state() private filter = "";
   @state() private libQuery = "";   // top-bar omnibar text: live-filters the library; Enter → import (link) or note search (text)
   @state() private dur = 0;
-  @state() private searchOpen = false;
+  @state() private modal: "search" | "settings" | "cheat" | "findReplace" | "tagmgr" | "doctor" | null = null;
   @state() private searchResults: SearchHit[] = [];
   @state() private phonemeHits: PhonemeHit[] = [];
-  @state() private settingsOpen = false;
   @state() private toasts: { id: number; msg: string; kind: "info" | "ok" | "err"; out?: boolean }[] = [];
   @state() private modalClosing = false;
   private closeTimer: ReturnType<typeof setTimeout> | 0 = 0;
@@ -167,8 +166,6 @@ export class App extends LitElement {
   @state() private tagFilter: string | null = null;
   @state() private libView: "all" | "transcript" | "untagged" | "tagged" = "all";
   @state() private folds: Record<string, boolean> = {};
-  @state() private cheatOpen = false;
-  @state() private findReplaceOpen = false;
   @state() private sortDesc = true;
   @state() private selected = new Set<string>();
   @state() private bulkPos: { x: number; y: number } | null = null;
@@ -188,7 +185,6 @@ export class App extends LitElement {
     try { return JSON.parse(localStorage.getItem("ytnt.tagColors") || "{}"); } catch { return {}; }
   })();
   private prevDaemonOk = false;
-  @state() private tagMgrOpen = false;
   @state() private editingTag: string | null = null;   // detail chip whose editor popover is open
   @state() private editTagName = "";                    // working rename value
   // No Phoneme preset palette exists to copy (its only color set is the rainbow
@@ -211,7 +207,6 @@ export class App extends LitElement {
   @state() private phonemeCompatible = true;
   @state() private phonemeVersion = "";
   @state() private phonemePath = "";
-  @state() private doctorOpen = false;
   // In-app themed confirm (replaces the unstyleable native OS dialog).
   @state() private confirmBox: { title: string; message: string; confirmLabel: string; kind: "warning" | "danger" } | null = null;
   private confirmResolve: ((v: boolean) => void) | null = null;
@@ -281,6 +276,7 @@ export class App extends LitElement {
   /** Display label for an action's current primary chord (for inline hints). */
   private chordHint(a: KeyAction): string { const c = this.activeKeymap()[a]; return c.length ? chordLabel(c[0]) : "—"; }
   @state() private kbdIndex = -1;            // video-list keyboard cursor (-1 = none)
+  private displayVids: VideoWithCount[] = []; // filtered/sorted library list render() paints (see willUpdate)
   private navVids: VideoWithCount[] = [];    // displayed video list, in DOM order (cursor indexes this)
   private seenVidIds = new Set<string>();    // one-shot row-enter animation bookkeeping
   private freshVidIds = new Set<string>();
@@ -312,7 +308,7 @@ export class App extends LitElement {
       return;
     }
     if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") this.keyboardMode = true;
-    if (e.key === "Escape" && (this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen)) { this.closeModal(); return; }
+    if (e.key === "Escape" && this.modal) { this.closeModal(); return; }
     const chord = normChord(e);
     const act = this.keyAction(chord);
     // Sidebar toggle is allowed even mid-typing, but only as a modifier combo.
@@ -324,7 +320,7 @@ export class App extends LitElement {
         (((e.key === "ArrowUp" || e.key === "ArrowDown") && this.arrowNav) || ((e.key === "j" || e.key === "k") && this.vimNav)
          || e.key === "Home" || e.key === "End" || e.key === "Enter" || e.key === " ")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.composedPath()[0] as HTMLElement)?.tagName ?? "");
-    if (typing || this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || this.confirmBox || this.fsNote) return;
+    if (typing || this.modal || this.confirmBox || this.fsNote) return;
     if (e.key === "Escape" && this.playerActive) { e.preventDefault(); this.playerActive = false; this.cursorToPlayer(); this.placeCursor(true); return; }
     if (e.key === "Escape" && this.focusedPane) { e.preventDefault(); this.focusedPane = null; this.cursorBox = null; this.navHud = null; ((this.renderRoot as ShadowRoot).activeElement as HTMLElement | null)?.blur?.(); return; }
     // Global actions (fire regardless of player / nav state).
@@ -792,15 +788,10 @@ export class App extends LitElement {
   private openModal(which: "search" | "settings" | "tagmgr" | "doctor" | "cheat" | "findReplace") {
     if (this.closeTimer) { clearTimeout(this.closeTimer); this.closeTimer = 0; }
     this.modalClosing = false;
-    this.searchOpen = this.settingsOpen = this.tagMgrOpen = this.doctorOpen = this.cheatOpen = this.findReplaceOpen = false;
     this.lastFocus = ((this.renderRoot as ShadowRoot).activeElement as HTMLElement) ?? null;
     // Bump the search generation so a late in-flight query can't repopulate a freshly-opened modal.
-    if (which === "search") { this.searchGen++; this.searchResults = []; this.phonemeHits = []; this.searchOpen = true; }
-    else if (which === "tagmgr") this.tagMgrOpen = true;
-    else if (which === "doctor") this.doctorOpen = true;
-    else if (which === "cheat") this.cheatOpen = true;
-    else if (which === "findReplace") this.findReplaceOpen = true;
-    else this.settingsOpen = true;
+    if (which === "search") { this.searchGen++; this.searchResults = []; this.phonemeHits = []; }
+    this.modal = which;
     this.updateComplete.then(() => this.focusables()[0]?.focus());
   }
   /** Animated modal close: fade/slide the overlay out, then unmount after the motion. */
@@ -808,8 +799,7 @@ export class App extends LitElement {
     if (this.modalClosing) return;
     const finish = () => {
       this.closeTimer = 0; this.modalClosing = false;
-      this.searchOpen = false; this.settingsOpen = false; this.tagMgrOpen = false; this.doctorOpen = false;
-      this.cheatOpen = false; this.findReplaceOpen = false;
+      this.modal = null;
       const target = this.lastFocus; this.lastFocus = null;
       this.updateComplete.then(() => { try { target?.focus(); } catch { /* trigger gone */ } });
     };
@@ -1054,7 +1044,7 @@ export class App extends LitElement {
       if (note.content.includes(find)) { await api.updateNote(note.id, note.content.split(find).join(repl)); n++; }
     }
     await this.refreshNotes();
-    this.findReplaceOpen = false;
+    this.modal = null;
     this.flash(n ? `Replaced in ${n} note${n > 1 ? "s" : ""}` : "No matches", n ? "ok" : "info");
   }
   private toggleSelect(id: string) {
@@ -1184,7 +1174,7 @@ export class App extends LitElement {
   }
   /** Put the single overlay cursor on the active cell. `scroll` brings it into view. */
   private placeCursor(scroll = false) {
-    const modal = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen || !!this.confirmBox || !!this.fsNote;
+    const modal = !!this.modal || !!this.confirmBox || !!this.fsNote;
     const el = (this.keyboardMode && !modal) ? this.activeCellEl() : null;
     if (!el) { if (this.cursorBox) this.cursorBox = null; if (this.navHud) this.navHud = null; return; }
     if (scroll) el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -1257,19 +1247,28 @@ export class App extends LitElement {
     await this.refreshVideos();
     this.flash(`Tagged ${n} video${n > 1 ? "s" : ""} “${t}”`, "ok");
   }
-  private bulkDrag(e: MouseEvent) {
+  private bulkDrag(e: PointerEvent) {
     e.preventDefault();
-    const bar = (e.currentTarget as HTMLElement).closest(".bulkbar") as HTMLElement | null;
+    const grip = e.currentTarget as HTMLElement;
+    // Capture so the drag keeps tracking over the video iframe; degrade gracefully.
+    try { grip.setPointerCapture(e.pointerId); } catch { /* still works while over the grip */ }
+    const bar = grip.closest(".bulkbar") as HTMLElement | null;
     const rect = bar?.getBoundingClientRect();
     const base = this.bulkPos ?? { x: rect?.left ?? 0, y: rect?.top ?? 0 };
     const sx = e.clientX, sy = e.clientY;
-    const move = (m: MouseEvent) => { this.bulkPos = {
+    const move = (m: PointerEvent) => { this.bulkPos = {
       x: Math.max(8, Math.min(window.innerWidth - 140, base.x + m.clientX - sx)),
       y: Math.max(8, Math.min(window.innerHeight - 48, base.y + m.clientY - sy)),
     }; };
-    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    const up = () => {
+      try { grip.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
   }
   private onPlayerError(code: number) {
     const msg: Record<number, string> = {
@@ -1465,27 +1464,38 @@ export class App extends LitElement {
     this.flash("Tag renamed", "ok");
   }
 
+  // Recompute the displayed library list only when an input it reads changed, and
+  // stash it (plus the nav cursor / fresh-row bookkeeping) so render() stays a pure
+  // read. willUpdate runs before render(), so navVids is set before the cursor uses it.
+  willUpdate(changed: PropertyValues) {
+    if (changed.has("videos") || changed.has("libView") || changed.has("tagFilter")
+        || changed.has("sortDesc") || changed.has("libQuery")) {
+      let vids = this.videos;
+      if (this.libView === "transcript") vids = vids.filter((v) => v.ext_ref);
+      else if (this.libView === "untagged") vids = vids.filter((v) => v.tags.length === 0);
+      else if (this.libView === "tagged") vids = vids.filter((v) => v.tags.length > 0);
+      if (this.tagFilter) vids = vids.filter((v) => v.tags.includes(this.tagFilter!));
+      // Omnibar live-filters the library by title (skip while it holds a link to import).
+      const lq = this.libQuery.trim().toLowerCase();
+      if (lq && !this.omniIsUrl()) vids = vids.filter((v) => (v.title || v.id).toLowerCase().includes(lq));
+      vids = [...vids];
+      if (!this.sortDesc) vids.reverse();          // list arrives newest-first; reverse → oldest-first
+      vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
+      this.displayVids = vids;
+      this.navVids = vids;                                         // the list cursor + Enter index this
+      this.freshVidIds = new Set(vids.filter((v) => !this.seenVidIds.has(v.id)).map((v) => v.id));
+      for (const v of vids) this.seenVidIds.add(v.id);             // one-shot: only genuinely-new rows animate in
+    }
+  }
+
   render() {
     const filtered = this.displayed();
     const tags = this.allTags();
     const transcriptCount = this.videos.filter((v) => v.ext_ref).length;
     const untaggedCount = this.videos.filter((v) => v.tags.length === 0).length;
     const taggedCount = this.videos.length - untaggedCount;
-    let vids = this.videos;
-    if (this.libView === "transcript") vids = vids.filter((v) => v.ext_ref);
-    else if (this.libView === "untagged") vids = vids.filter((v) => v.tags.length === 0);
-    else if (this.libView === "tagged") vids = vids.filter((v) => v.tags.length > 0);
-    if (this.tagFilter) vids = vids.filter((v) => v.tags.includes(this.tagFilter!));
-    // Omnibar live-filters the library by title (skip while it holds a link to import).
-    const lq = this.libQuery.trim().toLowerCase();
-    if (lq && !this.omniIsUrl()) vids = vids.filter((v) => (v.title || v.id).toLowerCase().includes(lq));
-    vids = [...vids];
-    if (!this.sortDesc) vids.reverse();          // list arrives newest-first; reverse → oldest-first
-    vids.sort((a, b) => Number(b.pinned) - Number(a.pinned)); // stable: pinned float to top
-    this.navVids = vids;                                         // the list cursor + Enter index this
-    this.freshVidIds = new Set(vids.filter((v) => !this.seenVidIds.has(v.id)).map((v) => v.id));
-    for (const v of vids) this.seenVidIds.add(v.id);             // one-shot: only genuinely-new rows animate in
-    const trapped = this.searchOpen || this.settingsOpen || this.cheatOpen || this.findReplaceOpen || this.tagMgrOpen || this.doctorOpen;
+    const vids = this.displayVids;
+    const trapped = !!this.modal;
     return html`
       <header class="appbar" ?data-tauri-drag-region=${this.settings.stripTitlebar}>
         <button class="ham" title="Toggle filters" aria-label="Toggle filters" @click=${() => this.toggleSidebar()}>${I.menu}</button>
@@ -1721,17 +1731,17 @@ export class App extends LitElement {
           : this.renderTranscript()}
       </main>
 
-      ${this.searchOpen ? this._guard(() => this.renderSearch()) : nothing}
-      ${this.settingsOpen ? this._guard(() => this.renderSettings()) : nothing}
-      ${this.cheatOpen ? this._guard(() => this.renderCheat()) : nothing}
-      ${this.findReplaceOpen ? this._guard(() => this.renderFindReplace()) : nothing}
-      ${this.tagMgrOpen ? this._guard(() => this.renderTagManager()) : nothing}
-      ${this.doctorOpen ? this._guard(() => this.renderDoctor()) : nothing}
+      ${this.modal === "search" ? this._guard(() => this.renderSearch()) : nothing}
+      ${this.modal === "settings" ? this._guard(() => this.renderSettings()) : nothing}
+      ${this.modal === "cheat" ? this._guard(() => this.renderCheat()) : nothing}
+      ${this.modal === "findReplace" ? this._guard(() => this.renderFindReplace()) : nothing}
+      ${this.modal === "tagmgr" ? this._guard(() => this.renderTagManager()) : nothing}
+      ${this.modal === "doctor" ? this._guard(() => this.renderDoctor()) : nothing}
       ${this.confirmBox ? this.renderConfirm() : nothing}
       ${this.selected.size ? html`<div class="bulkbar" style=${this.bulkPos
           ? `left:${this.bulkPos.x}px; top:${this.bulkPos.y}px;`
           : `left:50%; bottom:24px; transform:translateX(-50%);`}>
-        <span class="bulk-grip" title="Drag to move" @mousedown=${(e: MouseEvent) => this.bulkDrag(e)}>⠿</span>
+        <span class="bulk-grip" title="Drag to move" @pointerdown=${(e: PointerEvent) => this.bulkDrag(e)}>⠿</span>
         <span class="bulk-count">${this.selected.size} selected</span>
         <div class="bulk-actions">
           <details class="menu up">
@@ -2259,7 +2269,6 @@ export class App extends LitElement {
     :host([collapsed]) .rz-list { left:var(--w-list,340px); }
     :host([nolist]) .rz-list { display:none; }
     .hidden { display:none !important; }
-    .tb-left { display:flex; align-items:center; }
     @media (prefers-reduced-motion: reduce) { :host { --ui-motion: 0ms; --ui-motion-fast: 0ms; } }
     * { box-sizing:border-box; }
     ::selection { background:var(--tint); }
@@ -2268,16 +2277,6 @@ export class App extends LitElement {
     *::-webkit-scrollbar-thumb:hover { background:var(--border); background-clip:content-box; }
     .i { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:0 0 auto; }
     .muted { color:var(--fg-muted); } .sm { font-size:12px; } .grow { flex:1; min-width:0; }
-
-    .titlebar { grid-column:1/-1; display:flex; align-items:center; justify-content:space-between;
-      background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); user-select:none; }
-    .tb-title { display:flex; align-items:center; gap:8px; padding-left:12px; font-size:12.5px; font-weight:600; }
-    .tb-title .dot { width:9px; height:9px; border-radius:999px; background:var(--fg-faded); transition:background var(--ui-motion-fast); }
-    .tb-title .dot.ok { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
-    .tb-controls { display:flex; align-self:stretch; }
-    .tb-btn { width:46px; border:none; border-radius:0; background:transparent; color:var(--fg-muted); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
-    .tb-btn:hover { background:var(--hover); color:var(--fg-default); }
-    .tb-btn.close:hover { background:var(--err); color:var(--bg-deep); }
 
     aside { grid-column:1; grid-row:2; background:var(--bg-surface); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; padding-top:6px; }
     .list { grid-column:2; grid-row:2; display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:var(--bg-deep); border-right:1px solid var(--border-subtle); }
