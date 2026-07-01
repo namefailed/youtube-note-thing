@@ -6,7 +6,7 @@ This page covers how ytnt finds Phoneme, the health indicator, sending a video t
 
 ## 📦 What needs Phoneme — and what doesn't
 
-ytnt never bundles or requires Phoneme. The two apps talk over Phoneme's own CLI (and, where available, its local REST and daemon pipe), so if the `phoneme` binary isn't found, the integration just stays dark.
+ytnt never bundles or requires Phoneme. The two apps talk over Phoneme's own CLI (and, where available, its local REST API), so if the `phoneme` binary isn't found, the integration just stays dark.
 
 | Works **without** Phoneme | Needs Phoneme running |
 | --- | --- |

@@ -1879,4 +1879,60 @@ mod tests {
         let all_bad = parse_json_lines::<Segment>("garbage\nmore garbage\n", "segments");
         assert!(all_bad.is_err());
     }
+
+    #[test]
+    fn collects_playlist_videos_from_nested_innertube_tree() {
+        // A minimal shape mirroring InnerTube's browse response: renderers buried
+        // under arbitrary nesting, with the two title shapes (runs vs simpleText).
+        let v = serde_json::json!({
+            "contents": {
+                "items": [
+                    { "playlistVideoRenderer": {
+                        "videoId": "aaaaaaaaaaa",
+                        "title": { "runs": [ { "text": "First" } ] }
+                    }},
+                    { "playlistVideoRenderer": {
+                        "videoId": "bbbbbbbbbbb",
+                        "title": { "simpleText": "Second" }
+                    }},
+                    // A renderer with no videoId must be ignored, not panic.
+                    { "playlistVideoRenderer": { "title": { "simpleText": "No id" } } },
+                    // Unrelated nodes are skipped.
+                    { "somethingElse": { "videoId": "not-a-playlist-item" } }
+                ]
+            }
+        });
+        let mut out = Vec::new();
+        collect_playlist_videos(&v, &mut out);
+        assert_eq!(
+            out,
+            vec![
+                ("aaaaaaaaaaa".to_string(), "First".to_string()),
+                ("bbbbbbbbbbb".to_string(), "Second".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_continuation_token_or_none() {
+        // Token buried under onResponseReceivedActions → found by recursive scan.
+        let with_token = serde_json::json!({
+            "onResponseReceivedActions": [
+                { "appendContinuationItemsAction": {
+                    "continuationItems": [
+                        { "continuationItemRenderer": {
+                            "continuationEndpoint": {
+                                "continuationCommand": { "token": "TOKEN123" }
+                            }
+                        }}
+                    ]
+                }}
+            ]
+        });
+        assert_eq!(find_continuation_token(&with_token), Some("TOKEN123".to_string()));
+
+        // Last page has no continuationCommand → None (the loop-stop condition).
+        let last_page = serde_json::json!({ "contents": { "items": [] } });
+        assert_eq!(find_continuation_token(&last_page), None);
+    }
 }

@@ -5,7 +5,7 @@ the wrapper **Tauri 2**. There is no daemon and no catalog process: the whole
 backend is the Tauri app itself, holding a single SQLite connection pool and
 exposing a small `#[tauri::command]` surface to the frontend over Tauri's
 `invoke` bridge. Phoneme is an *optional* sibling reached by shelling out to its
-CLI (with REST and named-pipe fallbacks) — see
+CLI (with an opt-in REST fallback) — see
 [integrations.md](integrations.md).
 
 This guide is the map of that surface: what the commands are, how they're
@@ -81,7 +81,7 @@ All best-effort. If the `phoneme` CLI isn't found or its daemon is down, these
 fail and the UI degrades to "Phoneme not detected" — ytnt never bundles or
 requires Phoneme. The binary is located by `resolve_phoneme()` and most calls go
 through `run_phoneme(&[...])`; richer transcript features fall back from CLI →
-REST (`127.0.0.1:3737`) → the Windows daemon named pipe. See
+REST (`127.0.0.1:3737`). See
 [integrations.md](integrations.md) for the resolution order and the parity rules.
 
 | Command | Args | Returns | Does |
@@ -97,18 +97,21 @@ REST (`127.0.0.1:3737`) → the Windows daemon named pipe. See
 | `phoneme_chapters` | `id` | `Vec<Chapter>` | Stored auto-chapters (read-only `--show`; never triggers generation). |
 | `phoneme_search` | `query` | `Vec<PhonemeHit>` | Semantic search across the whole Phoneme archive. |
 | `phoneme_recording` | `id` | `PhonemeRec` | Full recording row: status, summary, model, language, duration, confidence, entities, tasks. |
-| `phoneme_versions` | `id` | `Vec<TranscriptVersion>` | The whole transcript chain (raw ASR → each step → live) for side-by-side compare. CLI → REST → pipe fallback. |
+| `phoneme_versions` | `id` | `Vec<TranscriptVersion>` | The whole transcript chain (raw ASR → each step → live) for side-by-side compare. CLI → REST fallback. |
 | `phoneme_recipes` | — | `Vec<PhonemeRecipe>` | Fetch the pipeline recipe list from Phoneme. |
 | `phoneme_daemon_start` | — | `()` | Run `phoneme daemon start` to bring the Phoneme daemon up. |
 | `phoneme_find_recording` | `video_id` | `Option<String>` | Scan the Phoneme archive for a recording linked to a video id; returns the recording id if found. |
 | `phoneme_watch_start` | — | `()` | Spawns `phoneme watch` (CLI), pipes each JSON line as a Tauri `phoneme-event`. Returns once the child is confirmed running. |
 | `phoneme_watch_stop` | — | `()` | Kill the `phoneme watch` child process and stop forwarding events. |
 
-`set_phoneme_bin`, `phoneme_apply_tags`, and the rest of the simple Phoneme
-commands are **synchronous** — `run_phoneme` blocks on a child process. The two
-that can block for a long time (`phoneme_import`) or do network I/O
-(`phoneme_versions`, `phoneme_watch_start`) are `async` and use `spawn_blocking` /
-`reqwest` so they don't stall the runtime.
+Nearly every `phoneme_*` **data** command is `async` and wraps its
+`run_phoneme` child-process call in `spawn_blocking` (via the `blocking()`
+helper), so a slow or hung Phoneme child never stalls the Tauri runtime;
+`phoneme_versions` additionally does network I/O (CLI → REST) over the
+shared `reqwest` client. The only **synchronous** Phoneme commands are
+`set_phoneme_bin` (a mutex write), `phoneme_watch_start`, and
+`phoneme_watch_stop` (they spawn/kill the long-lived `phoneme watch` child and
+return immediately).
 
 ### YouTube (no account needed) and Google account (`google_*`)
 
@@ -123,11 +126,11 @@ compiled-in defaults) and refresh tokens transparently. See
 | Command | Args | Returns | Does |
 | :--- | :--- | :--- | :--- |
 | `youtube_captions` | `video_id`, `lang?` | `Vec<Segment>` | Best-effort caption fetch via InnerTube (no auth). Fails often — many videos have none. |
-| `import_youtube_playlist` | `playlist_id` | `usize` | Import a public/unlisted playlist via InnerTube; returns how many were newly added. |
-| `google_status` | — | `bool` | Connected? (a stored refresh token exists). |
+| `import_youtube_playlist` | `playlist_id` | `usize` | Import a public/unlisted playlist via InnerTube, following the `continuation` token page by page (InnerTube returns ~100 items per page) so large playlists import in full; returns how many were newly added. |
+| `google_status` | — | `bool` | Connected? (a refresh token exists in the keychain). |
 | `google_has_default` | — | `bool` | Were OAuth creds compiled in (so "connect with built-in client" is possible)? |
 | `google_connect` | `client_id`, `client_secret` | `()` | Run the loopback OAuth flow, open the consent page, persist tokens. |
-| `google_logout` | — | `()` | Delete the stored tokens. |
+| `google_logout` | — | `()` | Clear the tokens from the keychain (and any legacy `google_tokens.json`). |
 | `google_playlists` | `client_id`, `client_secret` | `Vec<GPlaylist>` | The account's playlists (Watch Later/History are not exposed by the API). |
 | `sync_video_meta` | `client_id`, `client_secret`, `ids` | `()` | Fill library-card metadata (channel, views, duration, publish date) via `videos.list`, 50 ids per request. |
 | `import_google_playlist` | `client_id`, `client_secret`, `playlist_id` | `usize` | Page through `playlistItems` and add them to the library. |
@@ -168,13 +171,22 @@ library error.
 
 ### The `Db` state
 
-There is one piece of managed state: `Db`, a thin wrapper over a
-`sqlx::SqlitePool` ([`db.rs`](../../src-tauri/src/db.rs)). It's created once in
-`setup` and registered with `app.manage(db)`. Any command that needs the
-database declares `db: State<'_, Db>` as its first parameter and Tauri injects
-it. `Db` is `Clone` (cloning clones the pool's `Arc`), and the pool itself is
-`max_connections(5)`, so concurrent commands share connections without
-contention.
+There are two pieces of managed state, both created once in `setup`:
+
+- **`Db`** — a thin wrapper over a `sqlx::SqlitePool`
+  ([`db.rs`](../../src-tauri/src/db.rs)), registered with `app.manage(db)`. Any
+  command that needs the database declares `db: State<'_, Db>` and Tauri injects
+  it. `Db` is `Clone` (cloning clones the pool's `Arc`), and the pool itself is
+  `max_connections(5)`, so concurrent commands share connections without
+  contention.
+- **A shared `reqwest::Client`** — one pooled HTTP client (30s timeout,
+  redirects disabled), registered with `app.manage(http)`. Every command that
+  does outbound HTTP declares `client: State<'_, reqwest::Client>` and reuses
+  it: the Google Data API calls, the OAuth token exchange, `phoneme_versions`'
+  REST fallback, and the InnerTube `youtube_captions` / `import_youtube_playlist`
+  fetches (these two set a custom `User-Agent` per request rather than building
+  their own client). Redirects are off so `youtube_captions`' host allow-list
+  stays authoritative.
 
 Setup, in `run()`:
 
@@ -189,6 +201,14 @@ let opts = SqliteConnectOptions::new()
 let pool = SqlitePoolOptions::new().max_connections(5).connect_with(opts).await?;
 sqlx::migrate!("./migrations").run(&pool).await?;  // apply migrations at startup
 app.manage(Db { pool });
+
+// The second piece of managed state: one pooled HTTP client, reused by
+// every command that does outbound HTTP.
+let http = reqwest::Client::builder()
+    .timeout(Duration::from_secs(30))
+    .redirect(reqwest::redirect::Policy::none())
+    .build()?;
+app.manage(http);
 ```
 
 Migrations run here, at every startup, via `sqlx::migrate!`. The DB path, the
@@ -204,8 +224,11 @@ State that is *not* in the database lives elsewhere by design:
 - **`WATCH_CHILD`** — a `static Mutex<Option<Child>>` holding the running
   `phoneme watch` subprocess so `phoneme_watch_stop` can kill it and a new
   `phoneme_watch_start` can replace the previous child.
-- **Google tokens** — persisted to `google_tokens.json` in the app data dir
-  (next to `ytnt.db`), not in SQLite.
+- **Google tokens** — stored in the OS keychain via the `keyring` crate
+  (service `dev.ytnt.app`, account `google_tokens`), not in SQLite and not on
+  disk. `load_tokens` migrates any legacy plaintext `google_tokens.json` into
+  the keychain and deletes the file; `google_logout` clears the keychain entry
+  (and any leftover legacy file).
 - **Settings, tag colors, tag-sync snapshots** — all in the frontend's
   `localStorage`, never the backend. See
   [settings_reference.md](../user-guide/settings_reference.md).
@@ -215,10 +238,11 @@ State that is *not* in the database lives elsewhere by design:
 A command is `async` when it awaits the pool or does network I/O, and plain
 `fn` when it only does cheap synchronous work (a process spawn, a filesystem
 write, a mutex read). Examples of each: `list_videos` is `async` (touches the
-pool); `save_markdown` and `phoneme_tags` are sync. Anything that blocks for a
-while inside an `async` command — a long child process or a pipe read — is
-wrapped in `tauri::async_runtime::spawn_blocking` so it doesn't stall the
-runtime (see `phoneme_import`, `phoneme_versions`, `google_connect`).
+pool); `save_markdown` and `set_phoneme_bin` are sync. Anything that blocks for a
+while inside an `async` command — a Phoneme child process, a pipe read, or the
+OAuth loopback wait — is wrapped in `tauri::async_runtime::spawn_blocking` so it
+doesn't stall the runtime (see `phoneme_tags`, `phoneme_import`,
+`phoneme_versions`, `google_connect`).
 
 ---
 
@@ -354,7 +378,7 @@ Say you want a `set_note_starred(id, starred)` command. The full path:
 | :--- | :--- |
 | A query or the schema-facing logic | [`db.rs`](../../src-tauri/src/db.rs) (+ a new migration for schema) |
 | A command's signature or a new command | [`lib.rs`](../../src-tauri/src/lib.rs) (function + `generate_handler!`) and [`src/api.ts`](../../src/api.ts) |
-| How Phoneme is found / which transport is used | `resolve_phoneme` / `run_phoneme` / `phoneme_ipc` / `phoneme_rest_get` in [`lib.rs`](../../src-tauri/src/lib.rs); see [integrations.md](integrations.md) |
+| How Phoneme is found / which transport is used | `resolve_phoneme` / `run_phoneme` / `phoneme_rest_get` in [`lib.rs`](../../src-tauri/src/lib.rs); see [integrations.md](integrations.md) |
 | The OAuth flow or token storage | the `google_*` helpers (`exchange_code`, `valid_access_token`, `*_tokens`) in [`lib.rs`](../../src-tauri/src/lib.rs) |
 | Startup, the pool, or migration running | the `setup` closure in `run()` in [`lib.rs`](../../src-tauri/src/lib.rs) |
 

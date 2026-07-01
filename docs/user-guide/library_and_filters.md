@@ -116,12 +116,17 @@ If a filter leaves the list empty, you'll see **"No videos match this filter."**
 
 ## 🔎 Search
 
-Two different searches cover two different needs:
+Three different searches cover three different needs:
 
 | Search | Where | What it searches |
 | --- | --- | --- |
+| **Filter the library** | The omnibar in the top bar | Live substring filter of your **video list** by title, as you type. |
 | **Filter notes** | The toolbar above the notes list, in the detail pane | Live substring filter of the **current** video's notes only. |
-| **Search all notes** | The 🔍 button in the top bar, or press `/` | Full-text search across **every** note in your library. |
+| **Search all notes** | The omnibar (type text, then `Enter` or the **Search** button), or press `/` | Full-text search across **every** note in your library. |
+
+### Filter the library
+
+Type plain text into the **omnibar** in the top bar and the **Library** pane narrows to videos whose title contains what you type — instantly, case-insensitive, no `Enter` needed. Clear the box (or paste a link instead) to see the full library again.
 
 ### Filter the current video's notes
 
@@ -129,7 +134,7 @@ When a video is open, the **Filter notes…** box in the notes toolbar trims the
 
 ### Search all notes
 
-Press `/` (or click the 🔍 search icon in the top bar) to open the global search dialog, then start typing. Results are full-text matches across all your notes, each showing the note's timestamp, its video's title, and the matching text. Click a result to open that video and jump straight to the note's moment.
+Press `/`, or type into the omnibar and press `Enter` (or click **Search**), to open the global search dialog — pre-filled with whatever you typed in the omnibar — then keep typing. Results are full-text matches across all your notes, each showing the note's timestamp, its video's title, and the matching text. Click a result to open that video and jump straight to the note's moment.
 
 If [Phoneme](phoneme_integration.md) is running, search also queries Phoneme and lists any matching recordings under a **From Phoneme** heading. Clicking one of those opens the linked video here (or tells you if that recording isn't linked to a video in ytnt).
 

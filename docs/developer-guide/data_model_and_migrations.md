@@ -29,9 +29,13 @@ directory:
 %APPDATA%/dev.ytnt.app/         # Windows (the primary platform)
 ├── ytnt.db                     # videos, notes, FTS index, playlist cache
 ├── ytnt.db-wal                 # write-ahead log (WAL journaling is on)
-├── ytnt.db-shm                 # WAL shared-memory index
-└── google_tokens.json          # OAuth refresh/access tokens (not in SQLite)
+└── ytnt.db-shm                 # WAL shared-memory index
 ```
+
+OAuth tokens are **not** kept here — they live in the OS keychain (service
+`dev.ytnt.app`, account `google_tokens`). A legacy plaintext
+`google_tokens.json` from older builds is migrated into the keychain and deleted
+on first load, so it should not persist beside the DB.
 
 The directory is resolved at startup in the `setup` hook of
 [`src-tauri/src/lib.rs`](../../src-tauri/src/lib.rs) via Tauri's
@@ -59,7 +63,8 @@ build time — see the module comment at the top of
 > dir, Google client id/secret, hidden playlists, Phoneme binary, tag sync, tag
 > color overrides, sync snapshots) live in browser `localStorage` — see the
 > [settings reference](../user-guide/settings_reference.md). OAuth tokens live in
-> `google_tokens.json` beside the DB. The DB holds library data only.
+> the OS keychain (service `dev.ytnt.app`, account `google_tokens`), not beside
+> the DB. The DB holds library data only.
 
 ## 2. The schema
 

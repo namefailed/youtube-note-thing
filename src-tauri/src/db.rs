@@ -612,6 +612,56 @@ mod tests {
         assert_eq!(after_reset, ["early", "mid", "late"]);
     }
 
+    /// Re-importing the same backup must count every row as skipped (the
+    /// `INSERT OR IGNORE` no-op branch), not silently re-add or error.
+    #[tokio::test]
+    async fn import_counts_skips_on_reimport() {
+        let db = test_db().await;
+        db.upsert_video("v", "https://youtu.be/v").await.unwrap();
+        db.create_note("v", 1.0, "note one").await.unwrap();
+        db.create_note("v", 2.0, "note two").await.unwrap();
+
+        let backup = db.export().await.unwrap();
+        // Import the identical backup into the SAME db: every id already exists.
+        let stats = db.import(backup).await.unwrap();
+        assert_eq!(stats.added_videos, 0);
+        assert_eq!(stats.added_notes, 0);
+        assert_eq!(stats.skipped_videos, 1, "existing video must count as skipped");
+        assert_eq!(stats.skipped_notes, 2, "existing notes must count as skipped");
+
+        // A mixed backup (one old id, one new) splits added vs skipped.
+        let mixed = Backup {
+            videos: vec![
+                Video {
+                    id: "v".into(), // already present → skipped
+                    title: "V".into(),
+                    channel: None,
+                    url: "https://youtu.be/v".into(),
+                    duration: None,
+                    last_pos_secs: 0.0,
+                    manual_order: false,
+                    tags: Json(vec![]),
+                    ext_ref: None,
+                },
+                Video {
+                    id: "w".into(), // new → added
+                    title: "W".into(),
+                    channel: None,
+                    url: "https://youtu.be/w".into(),
+                    duration: None,
+                    last_pos_secs: 0.0,
+                    manual_order: false,
+                    tags: Json(vec![]),
+                    ext_ref: None,
+                },
+            ],
+            notes: vec![],
+        };
+        let mixed_stats = db.import(mixed).await.unwrap();
+        assert_eq!(mixed_stats.added_videos, 1);
+        assert_eq!(mixed_stats.skipped_videos, 1);
+    }
+
     /// `sync_playlist` caches items (with the in_library join), and `delete_video`
     /// clears that video's playlist_items so nothing orphans.
     #[tokio::test]

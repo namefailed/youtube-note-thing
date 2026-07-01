@@ -25,7 +25,6 @@ Every integration follows the same rule: **the Rust backend owns all I/O, the fr
         │
         ├──► Phoneme CLI  (std::process::Command, resolve_phoneme())
         ├──► phoneme-rest (reqwest, 127.0.0.1:3737, opt-in)
-        ├──► Phoneme daemon pipe (\\.\pipe\phoneme-daemon, Windows-only)
         └──► Google APIs (reqwest, OAuth 2.0 loopback)
 ```
 
@@ -52,20 +51,19 @@ On Windows the executable name is `phoneme.exe`; elsewhere `phoneme`. The overri
 
 > **Invariant — best-effort, never fatal.** Every Phoneme call can fail (CLI missing, daemon down, wrong version) and the UI degrades to "Phoneme not detected" instead of erroring. `run_phoneme()` turns a spawn failure into `Err("Phoneme CLI not found …")`; the frontend treats that as "Phoneme unavailable", not a crash.
 
-### 2.2 CLI-first, REST/pipe fallback
+### 2.2 CLI-first, REST fallback
 
-Phoneme exposes three transports. ytnt prefers the one that needs the least setup:
+Phoneme exposes two transports. ytnt prefers the one that needs the least setup:
 
 | Transport | Used by | Why |
 |-----------|---------|-----|
 | **CLI** (`std::process::Command`) | Almost everything — `import`, `show`, `chapters`, `search`, `tag *`, `versions` | Always available, cross-platform, no opt-in. The default path. |
 | **CLI — `phoneme watch`** | Live pipeline progress (`phoneme_watch_start`) | Spawns `phoneme watch`; pipes its stdout JSON lines as Tauri `phoneme-event`. No REST opt-in required. |
 | **phoneme-rest** (`reqwest`, `http://127.0.0.1:3737`) | `phoneme_versions` fallback | Opt-in (Phoneme's `[rest_api]`), loopback-only. `reqwest` sends no `Origin` header, so it passes phoneme-rest's loopback-Origin guard a webview `fetch` would fail. |
-| **Daemon named pipe** (`\\.\pipe\phoneme-daemon`) | Last-resort `phoneme_versions` | **Windows-only** today (`phoneme-ipc` has no Unix-socket transport). Off Windows, pipe-only paths return a clear "only available on Windows for now" notice rather than silently no-op'ing. |
 
-`phoneme_versions` is the clearest example of the cascade: it tries the **CLI** first (`phoneme --json versions <id>`), then **phoneme-rest** (`GET /api/recordings/:id/versions`), then the **named pipe** (`list_transcript_versions`) — see [`phoneme_versions`](../../src-tauri/src/lib.rs).
+`phoneme_versions` is the clearest example of the cascade: it tries the **CLI** first (`phoneme --json versions <id>`), then falls back to **phoneme-rest** (`GET /api/recordings/:id/versions`) — see [`phoneme_versions`](../../src-tauri/src/lib.rs).
 
-> **CLI / transport parity.** The same recording data is reachable by whichever transport is up. The full transcript-version chain (raw ASR → each pipeline step → live) is the one feature that originally needed the pipe; the CLI and REST routes were added so it works cross-platform when the pipe can't be dialed.
+> **CLI / transport parity.** The same recording data is reachable by whichever transport is up. The full transcript-version chain (raw ASR → each pipeline step → live) is served over the CLI by default, with phoneme-rest as an opt-in cross-platform fallback.
 
 ### 2.3 Detecting availability — `phoneme_probe`
 
@@ -87,7 +85,7 @@ All commands live in [`src-tauri/src/lib.rs`](../../src-tauri/src/lib.rs) and ar
 | `phoneme_recording(id)` | `--json show <id>` | `PhonemeRec` — status to poll, title, summary, model, language, duration, confidence, entities, tasks. |
 | `phoneme_segments(id)` | `--json show <id> --segments` | `Segment[]`. Empty while still transcribing (a normal state). |
 | `phoneme_chapters(id)` | `--json chapters <id> --show` | `Chapter[]`. **Read-only** — `--show` never triggers the LLM chapter step. |
-| `phoneme_versions(id)` | CLI → REST → pipe | `TranscriptVersion[]` for side-by-side compare. |
+| `phoneme_versions(id)` | CLI → REST | `TranscriptVersion[]` for side-by-side compare. |
 | `phoneme_search(query)` | `--json search <q> --limit 10` | `PhonemeHit[]` — semantic search across the whole Phoneme archive. |
 | `phoneme_tags()` | `--json tag list --all` | `PhonemeTag[]` — the whole catalog with colors (`--all` includes orphans), so ytnt paints chips the same color Phoneme does. |
 | `phoneme_tags_for(rec_id)` | `--json tag for <rec_id>` | `PhonemeTag[]` for one recording — the **pull** side of sync. Returns `Err` (not `[]`) when unreachable, so "couldn't reach Phoneme" is never mistaken for "no tags". |
@@ -198,7 +196,7 @@ The Google integration uses the standard OAuth 2.0 **installed-app loopback flow
 7. **Reject if no refresh token** came back ("remove this app from your Google account's third-party access and try again") — without it, the link can't survive a restart.
 8. Persist via `save_tokens()`.
 
-Tokens are stored as `google_tokens.json` in the app data dir (`app_data_dir()/google_tokens.json`) — **not** in `localStorage`. `google_logout` deletes that file; `google_status` reports connected iff a non-empty refresh token is on disk.
+Tokens are stored in the **OS keychain** via the `keyring` crate (service `dev.ytnt.app`, account `google_tokens`) — **not** in `localStorage` and **not** on disk. A legacy plaintext `google_tokens.json` (from older builds) is migrated into the keychain and deleted on first load. `google_logout` clears the keychain entry (and any leftover legacy file); `google_status` reports connected iff a non-empty refresh token is in the keychain.
 
 ### 5.2 Scopes
 

@@ -89,12 +89,15 @@ On macOS, `Cmd + Enter` and `Cmd + S` also save. The editor shows this hint inli
 
 ### Fullscreen note overlay
 
-When you capture a note while the video is fullscreen, a single-line overlay input appears over the video instead of the side editor.
+When you capture a note while the video is fullscreen, a multi-line overlay text area appears over the video instead of the side editor. It saves on the same keys as the side editor — a plain `Enter` just inserts a newline. Its hint reads *Ctrl+Enter to save · Esc to cancel*.
 
 | Keys | Action |
 | --- | --- |
-| `Enter` | Save the note and (if auto-pause is on) resume playback |
+| `Ctrl + Enter` | Save the note (and, if auto-pause is on, resume playback) |
+| `Ctrl + S` | Save the note |
 | `Esc` | Cancel and resume playback |
+
+On macOS, `Cmd + Enter` and `Cmd + S` also save.
 
 ## Keyboard navigation
 

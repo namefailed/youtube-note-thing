@@ -110,8 +110,7 @@ Phoneme is a sibling local transcription app. ytnt links a video to a Phoneme re
 The backend locates the binary with **`resolve_phoneme()`** in `lib.rs`, in priority order: the Settings/`set_phoneme_bin` override → the `PHONEME_BIN` env var → `PATH` → a `cargo install` → the usual local dev build. It is **CLI-first with fallbacks**:
 
 - **CLI** (`run_phoneme`) backs almost everything: probe/version, import, segments, chapters, search, tag list/attach/detach. Live pipeline progress uses `phoneme_watch_start` (spawns `phoneme watch`, pipes its stdout JSON lines as Tauri `phoneme-event`) and `phoneme_watch_stop` (kills the child), backed by `WATCH_CHILD: Mutex<Option<Child>>`.
-- **REST** (`phoneme-rest`, loopback `127.0.0.1:3737`, opt-in) is one source for transcript versions.
-- **Daemon named pipe** (Windows-only) is the last-resort source for transcript versions.
+- **REST** (`phoneme-rest`, loopback `127.0.0.1:3737`, opt-in) is the fallback source for transcript versions when the CLI can't serve them.
 
 **Invariants:**
 - **Phoneme is the tag-catalog authority.** ytnt mirrors Phoneme's tag colors and never holds its own catalog or daemon.
@@ -119,11 +118,11 @@ The backend locates the binary with **`resolve_phoneme()`** in `lib.rs`, in prio
 - **"Couldn't reach Phoneme" ≠ "no tags".** `phoneme_tags_for` returns `Err` (not an empty list) when the daemon is unreachable, so the frontend never detaches everything by mistake.
 - **A too-old Phoneme degrades loudly.** `phoneme_probe` reports `present` / `daemon_ok` / `version` / `compatible` against `MIN_PHONEME_VERSION`; the frontend polls it every 15 s so a daemon that starts or dies mid-session flips live.
 
-**CLI/REST parity** is the recurring theme: the same recording data is reachable through more than one transport, and the adapter prefers the most universally available one (CLI) before the opt-in or OS-specific ones. The full command-to-CLI mapping is in [integrations.md](integrations.md); the user-facing side is [phoneme_integration.md](../user-guide/phoneme_integration.md).
+**CLI/REST parity** is the recurring theme: the same recording data is reachable through more than one transport, and the adapter prefers the most universally available one (CLI) before the opt-in phoneme-rest fallback. The full command-to-CLI mapping is in [integrations.md](integrations.md); the user-facing side is [phoneme_integration.md](../user-guide/phoneme_integration.md).
 
 ### 5.2 Google / YouTube account
 
-Connecting a Google account is also optional. The backend runs the standard **installed-app loopback OAuth** flow (`google_connect` in `lib.rs`): bind a random `127.0.0.1` port with a `TcpListener`, open the consent page in the browser, capture the redirected `code`, exchange it for tokens, and persist them under the app data dir (`google_tokens.json`). The scope is the full `youtube` scope (read **and** write).
+Connecting a Google account is also optional. The backend runs the standard **installed-app loopback OAuth** flow (`google_connect` in `lib.rs`): bind a random `127.0.0.1` port with a `TcpListener`, open the consent page in the browser, capture the redirected `code`, exchange it for tokens, and persist them in the OS keychain (service `dev.ytnt.app`, account `google_tokens`; a legacy `google_tokens.json` is migrated in and deleted). The scope is the full `youtube` scope (read **and** write).
 
 The app's own OAuth client is compiled in via `build.rs`/`option_env!("YTNT_GOOGLE_CLIENT_ID"/"_SECRET")` read from a gitignored `.env` (see `.env.example`); a user can also supply their own client id/secret in Settings. With an account connected, ytnt uses `videos.list` to backfill library-card metadata (channel, views, duration, publish date) and `playlistItems` to browse playlists and add/remove videos. Watch Later and History are not exposed by the API. Details and quotas: [integrations.md](integrations.md); the user flow: [youtube_account_and_playlists.md](../user-guide/youtube_account_and_playlists.md).
 

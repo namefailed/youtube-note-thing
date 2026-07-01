@@ -27,25 +27,30 @@ Related reading:
 ## 1. The gates
 
 CI runs on every push to `main`/`master` and every pull request
-(`.github/workflows/ci.yml`). It is two jobs, and **local parity is exact** —
-the commands below are the same ones CI runs.
+(`.github/workflows/ci.yml`). It is five jobs — `frontend`, `rust`, `security`,
+`deny`, and `docs` (Rustdoc) — and **local parity is exact** for the build/test
+gates: the commands below are the same ones CI runs.
 
 | Gate | Command | Runs in | What it catches |
 | --- | --- | --- | --- |
 | Type check | `npm run type-check` | `frontend` (Ubuntu) | TypeScript errors (`tsc --noEmit`) |
 | Frontend tests | `npm test` | `frontend` (Ubuntu) | Pure-helper regressions (Vitest) |
 | Frontend build | `npm run build` | `frontend` (Ubuntu) | Vite build failures; also a prerequisite for the Rust build |
-| Backend build | `cargo build --manifest-path src-tauri/Cargo.toml` | `rust` (Windows) | Rust compile + migration-checksum failures |
+| Backend tests | `cargo test --locked --manifest-path src-tauri/Cargo.toml` | `rust` (Windows + Ubuntu + macOS) | Rust compile, unit-test failures, migration-checksum mismatches |
+| Clippy | `cargo clippy --locked --manifest-path src-tauri/Cargo.toml -- -D warnings` | `rust` (all three) | Lint warnings (treated as errors) |
+| Format | `cargo fmt --manifest-path src-tauri/Cargo.toml --check` | `rust` (all three) | Unformatted Rust |
+| Rustdoc | `cargo doc --locked --no-deps` (`RUSTDOCFLAGS=-D warnings`) | `docs` (Ubuntu) | Broken/warning rustdoc on the backend |
 
 Two things worth knowing about the CI shape:
 
-- **The `frontend` job runs on Ubuntu; the `rust` job runs on Windows.**
-  Windows is ytnt's primary platform, and the Rust build is where the
-  Windows-only bits live (the Phoneme daemon named pipe), so the backend is
-  built where it ships.
+- **The `frontend` job runs on Ubuntu; the `rust` job is a 3-OS matrix**
+  (`windows-latest`, `ubuntu-latest`, `macos-latest`). Windows is ytnt's primary
+  platform, but the matrix builds the backend on all three so the OS-specific
+  bits (the `.exe` suffix and `PATH` separator in `resolve_phoneme`, the keyring
+  backend) are exercised everywhere it ships.
 - **`npm run build` runs before the Rust build on purpose.** `generate_context!`
   embeds `../dist` at compile time, so the Rust crate won't build until the
-  frontend has been built once. If you skip the frontend build, `cargo build`
+  frontend has been built once. If you skip the frontend build, `cargo test`
   fails with a missing-`dist` error rather than a Rust error.
 
 ### Run everything locally
@@ -60,18 +65,19 @@ npm run type-check
 npm test
 npm run build
 
-# Backend gates (the `rust` CI job)
+# Backend gates (the `rust` CI job — needs ../dist from `npm run build`)
 cd src-tauri
-cargo test         # unit tests — CI only builds, but run the tests locally
-cargo check        # fast compile check while iterating
-cargo build        # full build, matching CI (needs ../dist from `npm run build`)
+cargo test    --locked   # unit tests (also compiles the crate)
+cargo clippy  --locked -- -D warnings
+cargo fmt --check
+cargo check              # optional: fast compile check while iterating
 cd ..
 ```
 
-> **Note:** CI's `rust` job only runs `cargo build`, not `cargo test` — the Rust
-> unit tests are pure and have no I/O, so they're cheap. Run `cargo test`
-> locally before a PR; it's the only place the backend's pure helpers are
-> exercised.
+> **Note:** the `rust` job runs `cargo test`, `cargo clippy -D warnings`, and
+> `cargo fmt --check` on all three OSes; the separate `docs` job runs
+> `cargo doc -D warnings`. The Rust unit tests are pure and have no I/O, so
+> they're cheap — run them (plus clippy/fmt) before a PR.
 
 ### Pre-PR checklist
 
@@ -81,11 +87,13 @@ Copy-paste this block before opening a pull request:
 npm run type-check
 npm test
 npm run build
-cargo test  --manifest-path src-tauri/Cargo.toml
-cargo build --manifest-path src-tauri/Cargo.toml
+cargo test   --locked --manifest-path src-tauri/Cargo.toml
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
 ```
 
-If all five pass, both CI jobs will pass.
+If all of these pass, the `frontend` and `rust` CI jobs will pass (the `docs`,
+`security`, and `deny` jobs run rustdoc and the dependency-audit gates).
 
 ---
 
@@ -149,7 +157,7 @@ network** — so they run instantly and need no fixtures.
 
 The reason these particular functions have tests and the bulk of `lib.rs`
 doesn't: the rest of the file is `#[tauri::command]` handlers that shell out to
-the Phoneme CLI, talk to the daemon pipe, or hit Google/YouTube over the
+the Phoneme CLI or hit Google/YouTube over the
 network — none of which is unit-testable without the live services. Parsing
 their **output** is the part that can break silently on a version bump, so that's
 the part under test. When you add a parser for a new CLI or API response, add a

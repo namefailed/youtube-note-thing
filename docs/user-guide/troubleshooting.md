@@ -53,12 +53,6 @@ If Phoneme is present but reports a version below the minimum this app was built
 > [!TIP]
 > **Fix:** Update Phoneme to a recent build. The version we saw is shown in the banner and on the green-dot hover.
 
-#### Transcript versions say "only available on Windows for now"
-
-Some Phoneme features (the full transcript-version comparison) can fall back to Phoneme's daemon named pipe, which today exists **only on Windows**. On other platforms, if the CLI and the optional REST API both can't serve versions, you'll see a notice that the feature isn't available on this OS yet. Windows is the primary platform, so this only affects non-Windows builds.
-
-See also: [Phoneme integration](phoneme_integration.md).
-
 ---
 
 ## 🔗 Connecting your YouTube account fails
@@ -185,12 +179,12 @@ If the app panics at startup while initializing the database with a `Migrate(Ver
 
 ## 📁 Where is everything?
 
-Everything the app persists is in one of two places: the app data directory on disk, or your browser-style `localStorage` (preferences only).
+Everything the app persists is in one of three places: the app data directory on disk, your browser-style `localStorage` (preferences only), or the OS keychain (Google tokens only).
 
 | What | Where | Notes |
 | --- | --- | --- |
 | **Database** (videos, notes, tags, playlists) | `%APPDATA%\dev.ytnt.app\ytnt.db` | SQLite, WAL mode — you may also see `ytnt.db-wal` / `ytnt.db-shm` alongside it. |
-| **Google tokens** | `%APPDATA%\dev.ytnt.app\google_tokens.json` | Removed when you disconnect your account. |
+| **Google tokens** | OS keychain — service `dev.ytnt.app`, account `google_tokens` (Windows Credential Manager / macOS Keychain / Linux Secret Service) | Not a file on disk. Cleared when you disconnect your account. Older builds kept a `google_tokens.json` beside the DB; it's migrated into the keychain and deleted on first launch. |
 | **Settings** | `localStorage` key `ytnt.settings` | Offset, autopause, theme, vault folder, Google client, Phoneme path, sync toggle, hidden playlists. |
 | **Tag color overrides** | `localStorage` key `ytnt.tagColors` | Your local color picks; win over Phoneme's. |
 | **Tag-sync snapshots** | `localStorage` key `ytnt.tagSyncBase` | Per-video base for the 3-way tag merge / pending queue. |
@@ -205,7 +199,7 @@ Everything the app persists is in one of two places: the app data directory on d
 
 ## 🧨 Factory reset (start completely fresh)
 
-A clean slate means deleting the app data directory. This removes **everything**: all videos, notes, tags, playlists, and your YouTube connection.
+A clean slate means deleting the app data directory. This removes all videos, notes, tags, and playlists. Your **Google connection is stored in the OS keychain, not this folder**, so it survives — use **Settings → disconnect your YouTube account** first if you also want to clear it.
 
 > [!CAUTION]
 > **This permanently deletes your notes and library.** There is no undo. **[Export a JSON backup first](library_and_filters.md)** (**Settings → Storage & backup → Export JSON / Import JSON**) if you might want any of it back — you can re-import that file later.
@@ -215,7 +209,7 @@ A clean slate means deleting the app data directory. This removes **everything**
 > ```powershell
 > Remove-Item -Recurse -Force "$env:APPDATA\dev.ytnt.app"
 > ```
-> On next launch the app recreates a fresh database from the migrations and you start empty. Your `localStorage` preferences (theme, etc.) are separate and survive this.
+> On next launch the app recreates a fresh database from the migrations and you start empty. Your `localStorage` preferences (theme, etc.) and your Google tokens (in the OS keychain) are separate and survive this.
 
 > [!TIP]
 > To reset **only** the database (keeping Google tokens), delete just `ytnt.db` (and its `-wal` / `-shm` siblings) inside that folder.

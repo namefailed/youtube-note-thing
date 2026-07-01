@@ -11,7 +11,7 @@ This page covers capturing notes, the capture offset, auto-pause, editing and re
 
 A note is a timestamp plus some text. The timestamp comes from wherever the player is when you capture; the text is yours.
 
-1. Load a video and start it playing (paste a link in the top bar and click **Load**, or pick one from the list).
+1. Load a video and start it playing (paste a link in the omnibar and click **Import**, or pick one from the list).
 2. When you reach a moment worth marking, press `Ctrl + N` — or click **Add note** on the **Notes** tab.
 3. Type your note in the editor that appears. **Markdown is supported.**
 4. Press `Ctrl + Enter` (or `Ctrl + S`) to save, or `Esc` to cancel.

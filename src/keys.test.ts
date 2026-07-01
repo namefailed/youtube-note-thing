@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { chordLabel, normChord, reverseKeymap, KEY_ACTIONS, KEYMAP_PRESETS, type KeyAction, type Keymap } from "./keys";
+import { chordLabel, normChord, reverseKeymap, resolveKeymap, KEY_ACTIONS, KEYMAP_PRESETS, type KeyAction, type Keymap } from "./keys";
 
 // vitest runs in node with no KeyboardEvent constructor, so fake the shape.
 const kev = (o: Partial<KeyboardEvent> & { key: string }): KeyboardEvent =>
@@ -83,5 +83,32 @@ describe("reverseKeymap", () => {
         for (const c of km[a.id]) expect(r[c]).toBe(a.id as KeyAction);
       }
     }
+  });
+});
+
+describe("resolveKeymap (preset + overrides merge)", () => {
+  it("with no overrides returns the named preset verbatim", () => {
+    expect(resolveKeymap("vim")).toEqual(KEYMAP_PRESETS.vim);
+    expect(resolveKeymap("youtube", null)).toEqual(KEYMAP_PRESETS.youtube);
+  });
+  it("falls back to default for an unknown preset name", () => {
+    expect(resolveKeymap("does-not-exist")).toEqual(KEYMAP_PRESETS.default);
+    expect(resolveKeymap("")).toEqual(KEYMAP_PRESETS.default);
+  });
+  it("an override replaces just that action's chords, leaving the rest of the preset", () => {
+    const km = resolveKeymap("default", { playPause: ["p"] });
+    expect(km.playPause).toEqual(["p"]);          // override wins
+    expect(km.mute).toEqual(KEYMAP_PRESETS.default.mute); // untouched
+  });
+  it("a colliding override deterministically last-wins in the reverse map (dead-shortcut guard)", () => {
+    // Bind capture to "m", which the default preset already gives to mute. The
+    // merge does NOT strip mute's "m", so reverseKeymap resolves "m" last-wins.
+    const km = resolveKeymap("default", { capture: ["m"] });
+    const rev = reverseKeymap(km);
+    // KEY_ACTIONS lists mute before capture, so capture (later) claims "m".
+    expect(rev.m).toBe("capture");
+    // mute now has no live chord reachable via the reverse map — the collision
+    // silently shadows it (the behavior this test pins so a regression is caught).
+    expect(Object.values(rev)).not.toContain("mute" as KeyAction);
   });
 });

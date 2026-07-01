@@ -43,7 +43,13 @@ When the window opens you'll see a top bar and three columns:
 | **Library** (middle) | A card per video — thumbnail, title, channel, view count, publish date, duration, note count, and tags. |
 | **Detail** (right) | The video player for the selected card, plus its notes (and the transcript view if you use Phoneme). |
 
-Across the **top bar**, left to right: a **filters** toggle, a **library** toggle, the **link box** ("Paste a YouTube video or playlist link…") with its **Load** button, a **search** button, a **settings** gear, and a small status dot for [Phoneme](phoneme_integration.md).
+Across the **top bar**, left to right: a **filters** toggle, a **library** toggle, the **omnibar** ("Search your library, or paste a link…"), one button next to it that reads **Import** when the box holds a link and **Search** when it holds plain text, a **settings** gear, and a small status dot for [Phoneme](phoneme_integration.md).
+
+The omnibar does three things depending on what you type:
+
+- **Type plain text** and the **Library** pane live-filters by title as you type.
+- **Press `Enter` on plain text** (or click **Search**) to open note search across all your notes, pre-filled with what you typed.
+- **Paste a link** and press `Enter` (or click **Import**) to add that video or import that playlist.
 
 You can hide either side column to give the player more room:
 
@@ -57,13 +63,13 @@ The panes you collapse are remembered between sessions.
 
 ## ▶️ Add your first video
 
-1. Click the **link box** in the top bar.
+1. Click the **omnibar** in the top bar.
 2. Paste a YouTube link or just the 11-character video ID. Any of these work:
    - `https://www.youtube.com/watch?v=VIDEO_ID`
    - `https://youtu.be/VIDEO_ID`
    - a `shorts/`, `embed/`, `v/`, or `live/` URL
    - the bare `VIDEO_ID`
-3. Press `Enter` or click **Load**.
+3. Press `Enter` or click **Import**. (The button reads **Import** as soon as the box holds a recognizable link.)
 
 The video is added to your **Library** and starts loading in the **Detail** pane. From then on, clicking its card in the Library reopens it instantly.
 

@@ -74,6 +74,15 @@ export function chordLabel(c: string): string {
     .join("+");
 }
 export function actionLabel(id: KeyAction): string { return KEY_ACTIONS.find((a) => a.id === id)?.label ?? id; }
+/** Resolve the active keymap: per-action overrides win, falling back to the named
+ *  preset (unknown preset → default). Pure so the merge is testable. */
+export function resolveKeymap(preset: string, overrides?: Partial<Keymap> | null): Keymap {
+  const base = KEYMAP_PRESETS[preset] ?? KEYMAP_PRESETS.default;
+  const ov = overrides || {};
+  const out = {} as Keymap;
+  for (const a of KEY_ACTIONS) out[a.id] = ov[a.id] ?? base[a.id];
+  return out;
+}
 /** Build the chord→action reverse lookup for a resolved keymap. */
 export function reverseKeymap(km: Keymap): Record<string, KeyAction> {
   const rev: Record<string, KeyAction> = {};

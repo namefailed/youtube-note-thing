@@ -6,7 +6,7 @@ import { api, type VideoWithCount, type Note, type SearchHit, type Segment, type
 import { Player } from "./player";
 import { parseVideoId, parsePlaylistId, parseRef, serializeRef, formatTime, applyOffset, notesToMarkdown, tsLink, safeTagColor, tagInk, DEFAULT_TAG_COLOR, mergeTagSets, formatViews, relativeDate } from "./lib";
 import { renderMarkdown } from "./markdown";
-import { type KeyAction, type Keymap, KEY_ACTIONS, KEYMAP_PRESETS, RESERVED_CHORDS, normChord, chordLabel, actionLabel, reverseKeymap } from "./keys";
+import { type KeyAction, type Keymap, KEY_ACTIONS, RESERVED_CHORDS, normChord, chordLabel, actionLabel, reverseKeymap, resolveKeymap } from "./keys";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
@@ -176,11 +176,7 @@ export class App extends LitElement {
   @state() private capturingAction: KeyAction | null = null;
   private _keymapRev: Record<string, KeyAction> | null = null;
   private activeKeymap(): Keymap {
-    const base = KEYMAP_PRESETS[this.settings.keymapPreset] ?? KEYMAP_PRESETS.default;
-    const ov = this.settings.keymapOverrides || {};
-    const out = {} as Keymap;
-    for (const a of KEY_ACTIONS) out[a.id] = ov[a.id] ?? base[a.id];
-    return out;
+    return resolveKeymap(this.settings.keymapPreset, this.settings.keymapOverrides);
   }
   private keyAction(chord: string): KeyAction | undefined {
     if (!this._keymapRev) {
@@ -322,7 +318,7 @@ export class App extends LitElement {
   // A mouse click hands control back to the pointer: hide the cursor until the next keypress.
   private onPointer = () => { if (this.keyboardMode) { this.keyboardMode = false; this.cursorBox = null; this.navHud = null; } };
 
-  connectedCallback() {
+  override connectedCallback() {
     super.connectedCallback();
     window.addEventListener("keydown", this.onKey, true);
     window.addEventListener("focusin", this.onFocusIn, true);
@@ -330,7 +326,7 @@ export class App extends LitElement {
     window.addEventListener("resize", this.onReflow);
     window.addEventListener("pointerdown", this.onPointer, true);
   }
-  disconnectedCallback() {
+  override disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onKey, true);
     window.removeEventListener("focusin", this.onFocusIn, true);
@@ -469,7 +465,7 @@ export class App extends LitElement {
     this.flash(`Synced tags for ${n} linked video${n === 1 ? "" : "s"}`, "ok");
   }
 
-  firstUpdated() {
+  override firstUpdated() {
     // Scroll events don't cross the shadow boundary; capture pane scrolls on the
     // shadow root so the fixed overlay cursor stays glued to its cell on wheel-scroll.
     this.renderRoot.querySelectorAll(".lib, aside, main.detail").forEach((p) => p.addEventListener("scroll", this.onReflow, { capture: true, passive: true }));
@@ -1360,7 +1356,7 @@ export class App extends LitElement {
     localStorage.setItem("ytnt.list", this.listOpen ? "1" : "0");
   }
   private toggleFold(k: string) { this.folds = { ...this.folds, [k]: !this.folds[k] }; }
-  updated(changed: Map<string, unknown>) {
+  override updated(changed: Map<string, unknown>) {
     this._cachedGrid = null; // invalidate grid cache on every re-render
     if (changed.has("sidebarOpen")) this.toggleAttribute("collapsed", !this.sidebarOpen);
     if (changed.has("listOpen")) this.toggleAttribute("nolist", !this.listOpen);
@@ -1426,7 +1422,7 @@ export class App extends LitElement {
   // Recompute the displayed library list only when an input it reads changed, and
   // stash it (plus the nav cursor / fresh-row bookkeeping) so render() stays a pure
   // read. willUpdate runs before render(), so navVids is set before the cursor uses it.
-  willUpdate(changed: PropertyValues) {
+  override willUpdate(changed: PropertyValues) {
     if (changed.has("videos")) {
       // Sorted tag list + per-tag video counts in one pass — read by the sidebar
       // in render() instead of an O(tags × videos) rescan on every unrelated render.
@@ -1462,7 +1458,7 @@ export class App extends LitElement {
     }
   }
 
-  render() {
+  override render() {
     const filtered = this.displayed();
     const tags = this.allTags();
     const transcriptCount = this.videos.filter((v) => v.ext_ref).length;
@@ -2192,7 +2188,7 @@ export class App extends LitElement {
         </div>`);
   }
 
-  static styles = css`
+  static override styles = css`
     :host {
       --r:10px; --r-sm:8px;
       --tint: color-mix(in srgb, var(--accent) 15%, transparent);

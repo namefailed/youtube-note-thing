@@ -111,7 +111,7 @@ To sign out:
 1. Open **Settings → YouTube account**.
 2. Click **Disconnect**.
 
-This removes the stored tokens (`google_tokens.json`) and clears your playlists from the sidebar. You'll see a **Disconnected** toast. Your library, notes, and any videos you pulled in stay exactly as they are — disconnecting only severs the live link to YouTube. Reconnect any time with **Connect YouTube**.
+This clears the stored tokens from the OS keychain and removes your playlists from the sidebar. You'll see a **Disconnected** toast. Your library, notes, and any videos you pulled in stay exactly as they are — disconnecting only severs the live link to YouTube. Reconnect any time with **Connect YouTube**.
 
 ## See also
 

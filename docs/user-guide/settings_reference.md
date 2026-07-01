@@ -165,6 +165,11 @@ All of these settings serialize to one JSON object in `localStorage` under `ytnt
 | `ytnt.settings` | Every field on this page (`offset`, `autopause`, `vaultDir`, `theme`, `stripTitlebar`, `gClientId`, `gClientSecret`, `hiddenPlaylists`, `phonemeBin`, `syncTags`, `vimNav`, `arrowNav`, `phonemeRecipe`, `keymapPreset`, `keymapOverrides`). |
 | `ytnt.tagColors` | Your local tag color overrides. |
 | `ytnt.tagSyncBase` | Per-video snapshots used as the base for the three-way tag merge. |
+| `ytnt.sidebar` | Whether the **Filters** side pane is shown (`"1"`/`"0"`). |
+| `ytnt.list` | Whether the **Library** list pane is shown (`"1"`/`"0"`). |
+| `ytnt.paneW` | The pixel widths of the side panes (`{ sidebar, list }`). |
+
+Your Google tokens are **not** in `localStorage` — they live in the OS keychain (see [Where is everything?](troubleshooting.md#-where-is-everything)).
 
 The defaults, if a field is missing, are: `offset` `3`, `autopause` on, `vaultDir` empty, `theme` `catppuccin-mocha`, `stripTitlebar` off, `gClientId`/`gClientSecret` empty, `hiddenPlaylists` empty, `phonemeBin` empty, `syncTags` on, `vimNav` off, `arrowNav` off, `phonemeRecipe` empty, `keymapPreset` `default`, `keymapOverrides` empty.
 
@@ -174,7 +179,7 @@ The defaults, if a field is missing, are: `offset` `3`, `autopause` on, `vaultDi
 > You almost never need to edit `localStorage` by hand — every value above is exposed in the dialog. Prefer the UI; it re-applies the theme, window decorations, and Phoneme probe for you on change.
 
 > [!WARNING]
-> Clearing this app's site/WebView storage erases all three keys above and reverts settings to defaults. This does **not** delete your videos or notes (those are in the SQLite database), but you will lose vault path, tag colors, and your connected-account session. Export a JSON backup first if in doubt.
+> Clearing this app's site/WebView storage erases all of the keys above and reverts settings to defaults. This does **not** delete your videos or notes (those are in the SQLite database), nor your Google connection (that's in the OS keychain), but you will lose your vault path, tag colors, pane layout, and other preferences. Export a JSON backup first if in doubt.
 
 ## See also
 
