@@ -13,6 +13,18 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Run a blocking closure on the async pool and flatten the two error layers
+/// (the `JoinError` from the task and the closure's own `Result`) into one. A
+/// missing second `?` on a hand-written `spawn_blocking(...).await??` silently
+/// changes the return type, so callers with a fallible body use this instead.
+async fn blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
+}
+
 #[tauri::command]
 async fn list_videos(db: State<'_, Db>) -> Result<Vec<VideoWithCount>, String> {
     db.list_videos().await.map_err(err)
@@ -288,9 +300,7 @@ async fn phoneme_tags() -> Vec<PhonemeTag> {
 /// everything.
 #[tauri::command]
 async fn phoneme_tags_for(rec_id: String) -> Result<Vec<PhonemeTag>, String> {
-    tauri::async_runtime::spawn_blocking(move || run_phoneme_json(&["tag", "for", "--", &rec_id]))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking(move || run_phoneme_json(&["tag", "for", "--", &rec_id])).await
 }
 
 /// Push membership changes for one recording: create-if-missing (with the
@@ -303,7 +313,7 @@ async fn phoneme_apply_tags(
     remove: Vec<String>,
     colors: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         for name in &add {
             // Best-effort create — a no-op/error if the tag already exists; the
             // attach below resolves it by name either way. `--` guards a tag named
@@ -324,14 +334,13 @@ async fn phoneme_apply_tags(
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// Rename (and optionally recolor) a Phoneme catalog tag globally — keeps its id
 /// and every attachment, so renaming from ytnt doesn't orphan the old tag.
 #[tauri::command]
 async fn phoneme_update_tag(id: i64, name: String, color: Option<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let id = id.to_string();
         // Options before `--`, then the positionals (id, name) — so a tag renamed
         // to something flag-like can't be reparsed as an option.
@@ -348,7 +357,6 @@ async fn phoneme_update_tag(id: i64, name: String, color: Option<String>) -> Res
         run_phoneme(&args).map(|_| ())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// Run `phoneme --json <args>` and deserialize stdout into `T` — the typed
@@ -365,9 +373,7 @@ fn run_phoneme_json<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<T, 
 /// and returns immediately). Used by the "daemon not responding → start it" path.
 #[tauri::command]
 async fn phoneme_daemon_start() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| run_phoneme(&["daemon", "start"]).map(|_| ()))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking(|| run_phoneme(&["daemon", "start"]).map(|_| ())).await
 }
 
 /// The lowest Phoneme version whose `--json` / CLI contract ytnt was built
@@ -449,7 +455,7 @@ async fn phoneme_import(url: String, recipe: Option<String>) -> Result<String, S
     struct ImportResult {
         id: String,
     }
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = blocking(move || {
         let recipe = recipe.unwrap_or_default();
         let recipe = recipe.trim();
         let mut args: Vec<&str> = vec!["import"];
@@ -463,8 +469,7 @@ async fn phoneme_import(url: String, recipe: Option<String>) -> Result<String, S
         args.push(&url);
         run_phoneme_json::<ImportResult>(&args)
     })
-    .await
-    .map_err(|e| e.to_string())??;
+    .await?;
     if result.id.is_empty() {
         return Err("Phoneme returned no recording id".into());
     }
@@ -552,12 +557,11 @@ fn parse_json_lines<T: serde::de::DeserializeOwned>(
 /// Fetch a recording's transcript segments (empty while still transcribing).
 #[tauri::command]
 async fn phoneme_segments(id: String) -> Result<Vec<Segment>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let out = run_phoneme(&["--json", "show", "--segments", "--", &id])?;
         parse_json_lines(&out, "segments")
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -577,12 +581,11 @@ struct Chapter {
 /// recording has no chapters — a normal state, not an error.
 #[tauri::command]
 async fn phoneme_chapters(id: String) -> Result<Vec<Chapter>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let out = run_phoneme(&["--json", "chapters", "--show", "--", &id])?;
         parse_json_lines(&out, "chapters")
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[derive(serde::Serialize)]
@@ -598,9 +601,7 @@ async fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
     if query.trim().is_empty() {
         return Ok(vec![]);
     }
-    tauri::async_runtime::spawn_blocking(move || phoneme_search_blocking(&query))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking(move || phoneme_search_blocking(&query)).await
 }
 
 /// One `phoneme search` result. The recording fields may come flat on the row or
@@ -660,63 +661,6 @@ fn phoneme_search_blocking(query: &str) -> Result<Vec<PhonemeHit>, String> {
     Ok(hits)
 }
 
-/// OS-branched path to Phoneme's daemon IPC endpoint (default name
-/// `phoneme-daemon`). On Windows this is the named pipe `\\.\pipe\phoneme-daemon`.
-///
-/// Phoneme's IPC is **Windows-named-pipe only** today — `phoneme-ipc` uses
-/// `tokio::net::windows::named_pipe` with no Unix-socket transport — so there is
-/// no stable Unix path to dial. Rather than silently no-op off Windows, the
-/// pipe-only features (transcript versions) return `Err(None)` here so callers
-/// surface a clear "not available on this OS yet" notice.
-#[cfg(windows)]
-fn phoneme_pipe_path() -> Option<String> {
-    Some(r"\\.\pipe\phoneme-daemon".to_string())
-}
-#[cfg(not(windows))]
-fn phoneme_pipe_path() -> Option<String> {
-    None
-}
-
-// Phoneme's daemon named pipe (NDJSON). The full transcript-version chain is only
-// exposed here — not via the CLI or REST — so we talk to it directly for variants.
-fn phoneme_ipc(req: serde_json::Value) -> Result<serde_json::Value, String> {
-    use std::io::{BufRead, BufReader, Write};
-    let path = phoneme_pipe_path().ok_or_else(|| {
-        "This feature needs Phoneme's daemon pipe, which is only available on Windows for now."
-            .to_string()
-    })?;
-    let mut pipe = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)
-        .map_err(|e| format!("Phoneme daemon not reachable ({e})"))?;
-    let line = serde_json::to_string(&req).map_err(err)? + "\n";
-    pipe.write_all(line.as_bytes()).map_err(err)?;
-    pipe.flush().ok();
-    // Bounded read: a daemon that accepts the pipe but never replies must not block
-    // forever — std::fs::File honors no read timeout on a Windows named pipe, so we
-    // read on a throwaway thread and give up after 10s.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(pipe);
-        let mut resp = String::new();
-        let _ = tx.send(reader.read_line(&mut resp).map(|_| resp));
-    });
-    let resp = rx
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(|_| "Phoneme daemon did not respond in time".to_string())?
-        .map_err(err)?;
-    let v: serde_json::Value = serde_json::from_str(resp.trim()).map_err(err)?;
-    match v.get("status").and_then(|s| s.as_str()) {
-        Some("ok") => Ok(v.get("value").cloned().unwrap_or(serde_json::Value::Null)),
-        _ => Err(v
-            .pointer("/value/message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("Phoneme IPC error")
-            .to_string()),
-    }
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PhonemeEntity {
     #[serde(default)]
@@ -756,13 +700,7 @@ struct PhonemeRec {
 /// Full recording row (status to poll + summary / entities / tasks / metadata).
 #[tauri::command]
 async fn phoneme_recording(id: String) -> Result<PhonemeRec, String> {
-    tauri::async_runtime::spawn_blocking(move || phoneme_recording_blocking(&id))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-fn phoneme_recording_blocking(id: &str) -> Result<PhonemeRec, String> {
-    run_phoneme_json(&["show", "--", id])
+    blocking(move || run_phoneme_json(&["show", "--", &id])).await
 }
 
 #[derive(serde::Serialize)]
@@ -833,7 +771,7 @@ fn parse_versions(arr: &[serde_json::Value]) -> Vec<TranscriptVersion> {
 /// Every transcript in the compounding chain (raw ASR → each pipeline step → live)
 /// for side-by-side comparison. Prefers the `phoneme --json versions` CLI (always
 /// available + cross-platform), then phoneme-rest (`GET /api/recordings/:id/
-/// versions`), then the daemon named pipe (Windows-only) as a last resort.
+/// versions`); an unreachable Phoneme yields an empty list.
 #[tauri::command]
 async fn phoneme_versions(
     client: State<'_, reqwest::Client>,
@@ -858,17 +796,7 @@ async fn phoneme_versions(
             return Ok(parse_versions(arr));
         }
     }
-    // Last resort: the daemon named pipe. Off-Windows with REST off + the CLI
-    // unavailable, this returns the "only on Windows for now" notice. Run on a
-    // blocking thread so the bounded-but-still-blocking pipe read (phoneme_ipc)
-    // can't park a tokio worker.
-    let val = tauri::async_runtime::spawn_blocking(move || {
-        phoneme_ipc(serde_json::json!({ "type": "list_transcript_versions", "id": id }))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    let arr = val.as_array().cloned().unwrap_or_default();
-    Ok(parse_versions(&arr))
+    Ok(Vec::new())
 }
 
 // ── Live pipeline progress via phoneme-rest SSE (GET /api/events) ──────────────
@@ -932,13 +860,12 @@ fn phoneme_watch_stop() {
 /// have no captions, and YouTube changes this — so failures are normal; the UI then
 /// points at Phoneme for reliable transcripts. Runs from Rust, so no webview CORS.
 #[tauri::command]
-async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<Segment>, String> {
+async fn youtube_captions(
+    client: State<'_, reqwest::Client>,
+    video_id: String,
+    lang: Option<String>,
+) -> Result<Vec<Segment>, String> {
     let want = lang.unwrap_or_else(|| "en".into());
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0")
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
     let body = serde_json::json!({
         "context": { "client": { "clientName": "WEB", "clientVersion": "2.20240101.00.00" } },
         "videoId": video_id,
@@ -947,6 +874,7 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
         .post(format!(
             "https://www.youtube.com/youtubei/v1/player?key={INNERTUBE_API_KEY}"
         ))
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
         .json(&body)
         .send()
         .await
@@ -985,8 +913,11 @@ async fn youtube_captions(video_id: String, lang: Option<String>) -> Result<Vec<
             return Err(format!("Caption URL has unexpected host/scheme: {base}"));
         }
     }
+    // The shared client uses redirect Policy::none(), so the host check above is
+    // authoritative — reqwest won't follow a redirect to an unvalidated host.
     let cap: serde_json::Value = client
         .get(format!("{base}&fmt=json3"))
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -1056,30 +987,74 @@ fn collect_playlist_videos(v: &serde_json::Value, out: &mut Vec<(String, String)
     }
 }
 
+/// Find the `continuationCommand.token` anywhere in an InnerTube response tree.
+/// It rides on the trailing `continuationItemRenderer` of the playlist contents
+/// and on `onResponseReceivedActions.appendContinuationItemsAction`, so a
+/// recursive scan reaches it regardless of which shape a given page uses.
+fn find_continuation_token(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Object(m) => {
+            if let Some(tok) = m
+                .get("continuationCommand")
+                .and_then(|c| c.get("token"))
+                .and_then(|t| t.as_str())
+            {
+                return Some(tok.to_string());
+            }
+            m.values().find_map(find_continuation_token)
+        }
+        serde_json::Value::Array(a) => a.iter().find_map(find_continuation_token),
+        _ => None,
+    }
+}
+
 #[tauri::command]
-async fn import_youtube_playlist(db: State<'_, Db>, playlist_id: String) -> Result<usize, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0")
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(err)?;
-    let body = serde_json::json!({
-        "context": { "client": { "clientName": "WEB", "clientVersion": "2.20240101.00.00" } },
-        "browseId": format!("VL{playlist_id}"),
-    });
-    let v: serde_json::Value = client
-        .post(format!(
-            "https://www.youtube.com/youtubei/v1/browse?key={INNERTUBE_API_KEY}"
-        ))
-        .json(&body)
-        .send()
-        .await
-        .map_err(err)?
-        .json()
-        .await
-        .map_err(err)?;
-    let mut vids = Vec::new();
-    collect_playlist_videos(&v, &mut vids);
+async fn import_youtube_playlist(
+    db: State<'_, Db>,
+    client: State<'_, reqwest::Client>,
+    playlist_id: String,
+) -> Result<usize, String> {
+    let url = format!("https://www.youtube.com/youtubei/v1/browse?key={INNERTUBE_API_KEY}");
+    let context = serde_json::json!({ "client": { "clientName": "WEB", "clientVersion": "2.20240101.00.00" } });
+    // First browse seeds the id; subsequent pages POST the continuation token
+    // instead of a browseId, following it until absent. InnerTube returns ~100
+    // items per page, so a large playlist needs several round-trips.
+    let mut body =
+        serde_json::json!({ "context": context.clone(), "browseId": format!("VL{playlist_id}") });
+    let mut vids: Vec<(String, String)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // Safety bound: stop after 100 pages (~10k videos) even if YouTube keeps
+    // handing back tokens, so a misbehaving response can't loop forever.
+    for _ in 0..100 {
+        let v: serde_json::Value = client
+            .post(&url)
+            .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+            .json(&body)
+            .send()
+            .await
+            .map_err(err)?
+            .json()
+            .await
+            .map_err(err)?;
+        let mut page = Vec::new();
+        collect_playlist_videos(&v, &mut page);
+        // De-dupe against earlier pages so a repeated/overlapping continuation
+        // can't inflate the count; `added` also lets us detect a dead loop.
+        let mut added = 0usize;
+        for (id, title) in page {
+            if seen.insert(id.clone()) {
+                vids.push((id, title));
+                added += 1;
+            }
+        }
+        // Stop when a page yields no new ids, regardless of any token.
+        match find_continuation_token(&v) {
+            Some(t) if added > 0 => {
+                body = serde_json::json!({ "context": context.clone(), "continuation": t });
+            }
+            _ => break,
+        }
+    }
     if vids.is_empty() {
         return Err("No videos found — the playlist may be private, empty, or unavailable.".into());
     }
@@ -1167,7 +1142,7 @@ fn load_tokens(app: &AppHandle) -> Option<GoogleTokens> {
         Ok(json) => serde_json::from_str(&json).ok(),
         // Nothing in the keychain — migrate a legacy plaintext file if present:
         // store it in the keychain, delete the file, then return it.
-        Err(_) => {
+        Err(keyring::Error::NoEntry) => {
             let p = tokens_path(app).ok()?;
             let json = std::fs::read_to_string(&p).ok()?;
             let t: GoogleTokens = serde_json::from_str(&json).ok()?;
@@ -1175,6 +1150,13 @@ fn load_tokens(app: &AppHandle) -> Option<GoogleTokens> {
                 let _ = std::fs::remove_file(&p);
             }
             Some(t)
+        }
+        // A transient keychain failure (locked, D-Bus/secret-service down) is NOT
+        // a logout — log it and report "no tokens for now" without touching the
+        // legacy file, so a valid refresh token isn't lost mid-session.
+        Err(e) => {
+            eprintln!("keychain read failed (not treating as logout): {e}");
+            None
         }
     }
 }
@@ -1188,15 +1170,16 @@ fn save_tokens(_app: &AppHandle, t: &GoogleTokens) -> Result<(), String> {
 /// otherwise a same-machine process that wins the race to the loopback port could
 /// inject its own code and bind ytnt to the attacker's account.
 fn wait_for_code(listener: TcpListener, expected_state: &str) -> Result<String, String> {
-    use std::io::BufRead as _;
+    use std::io::{BufRead as _, Read as _};
     let (mut stream, _) = listener.accept().map_err(err)?;
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(err)?;
     // Read lines until the blank header boundary (handles TCP fragmentation).
-    // Scope the BufReader so it drops before the write below.
+    // Scope the BufReader so it drops before the write below. Cap the read at 8 KiB
+    // so a local process can't stream an unbounded request into memory.
     let first_line = {
-        let mut reader = std::io::BufReader::new(&stream);
+        let mut reader = std::io::BufReader::new((&stream).take(8192));
         let mut first_line = String::new();
         reader.read_line(&mut first_line).map_err(err)?;
         // Drain remaining headers.
@@ -1383,9 +1366,7 @@ async fn google_connect(
     app.opener()
         .open_url(auth.to_string(), None::<&str>)
         .map_err(err)?;
-    let code = tauri::async_runtime::spawn_blocking(move || wait_for_code(listener, &state))
-        .await
-        .map_err(err)??;
+    let code = blocking(move || wait_for_code(listener, &state)).await?;
     let tokens = exchange_code(&client, &client_id, &client_secret, &code, &redirect).await?;
     if tokens.refresh_token.is_empty() {
         return Err("Google did not return a refresh token. Remove this app from your Google account's third-party access and try again.".into());
@@ -1448,19 +1429,32 @@ async fn sync_video_meta(
     let token = valid_access_token(&app, &client, &client_id, &client_secret).await?;
     for chunk in ids.chunks(50) {
         let id_param = chunk.join(",");
-        let res: serde_json::Value = client
-            .get("https://www.googleapis.com/youtube/v3/videos")
-            .query(&[
-                ("part", "snippet,statistics,contentDetails"),
-                ("id", id_param.as_str()),
-            ])
-            .bearer_auth(&token)
-            .send()
-            .await
-            .map_err(err)?
-            .json()
-            .await
-            .map_err(err)?;
+        // One chunk failing must not abort the rest of the backfill — this is a
+        // best-effort, idempotent metadata fill that re-runs, so log and skip the
+        // bad chunk instead of `?`-returning and dropping every chunk after it.
+        let fetched = async {
+            client
+                .get("https://www.googleapis.com/youtube/v3/videos")
+                .query(&[
+                    ("part", "snippet,statistics,contentDetails"),
+                    ("id", id_param.as_str()),
+                ])
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(err)?
+                .json::<serde_json::Value>()
+                .await
+                .map_err(err)
+        }
+        .await;
+        let res = match fetched {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("sync_video_meta: skipping a chunk: {e}");
+                continue;
+            }
+        };
         let Some(items) = res.get("items").and_then(|x| x.as_array()) else {
             continue;
         };
@@ -1558,6 +1552,49 @@ async fn google_playlists(
     Ok(out)
 }
 
+/// Page through `youtube/v3/playlistItems` 50 at a time, following `nextPageToken`,
+/// and return every raw item across all pages. Single-sources the paging + bearer
+/// auth + mid-page API-error handling that `import_google_playlist` and
+/// `google_sync_playlist` both need; each caller maps the items to its own shape.
+async fn fetch_playlist_items(
+    client: &reqwest::Client,
+    token: &str,
+    playlist_id: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut items = Vec::new();
+    let mut page = String::new();
+    loop {
+        let mut q = vec![
+            ("part", "snippet"),
+            ("playlistId", playlist_id),
+            ("maxResults", "50"),
+        ];
+        if !page.is_empty() {
+            q.push(("pageToken", page.as_str()));
+        }
+        let res: serde_json::Value = client
+            .get("https://www.googleapis.com/youtube/v3/playlistItems")
+            .query(&q)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(err)?
+            .json()
+            .await
+            .map_err(err)?;
+        if let Some(arr) = res.get("items").and_then(|x| x.as_array()) {
+            items.extend(arr.iter().cloned());
+        } else if let Some(e) = res.pointer("/error/message").and_then(|x| x.as_str()) {
+            return Err(e.to_string());
+        }
+        match res.get("nextPageToken").and_then(|x| x.as_str()) {
+            Some(t) => page = t.to_string(),
+            None => break,
+        }
+    }
+    Ok(items)
+}
+
 #[tauri::command]
 async fn import_google_playlist(
     app: AppHandle,
@@ -1569,44 +1606,17 @@ async fn import_google_playlist(
 ) -> Result<usize, String> {
     let token = valid_access_token(&app, &client, &client_id, &client_secret).await?;
     let mut vids: Vec<(String, String)> = Vec::new();
-    let mut page = String::new();
-    loop {
-        let mut q = vec![
-            ("part", "snippet"),
-            ("playlistId", playlist_id.as_str()),
-            ("maxResults", "50"),
-        ];
-        if !page.is_empty() {
-            q.push(("pageToken", page.as_str()));
-        }
-        let res: serde_json::Value = client
-            .get("https://www.googleapis.com/youtube/v3/playlistItems")
-            .query(&q)
-            .bearer_auth(&token)
-            .send()
-            .await
-            .map_err(err)?
-            .json()
-            .await
-            .map_err(err)?;
-        if let Some(items) = res.get("items").and_then(|x| x.as_array()) {
-            for it in items {
-                let vid = it
-                    .pointer("/snippet/resourceId/videoId")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("");
-                if !vid.is_empty() {
-                    let title = it
-                        .pointer("/snippet/title")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("");
-                    vids.push((vid.to_string(), title.to_string()));
-                }
-            }
-        }
-        match res.get("nextPageToken").and_then(|x| x.as_str()) {
-            Some(t) => page = t.to_string(),
-            None => break,
+    for it in fetch_playlist_items(&client, &token, &playlist_id).await? {
+        let vid = it
+            .pointer("/snippet/resourceId/videoId")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if !vid.is_empty() {
+            let title = it
+                .pointer("/snippet/title")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            vids.push((vid.to_string(), title.to_string()));
         }
     }
     db.import_playlist(&vids).await.map_err(err)
@@ -1626,53 +1636,24 @@ async fn google_sync_playlist(
 ) -> Result<Vec<PlaylistItem>, String> {
     let token = valid_access_token(&app, &client, &client_id, &client_secret).await?;
     let mut items: Vec<(String, String, String, i64)> = Vec::new();
-    let mut page = String::new();
-    loop {
-        let mut q = vec![
-            ("part", "snippet"),
-            ("playlistId", playlist_id.as_str()),
-            ("maxResults", "50"),
-        ];
-        if !page.is_empty() {
-            q.push(("pageToken", page.as_str()));
+    for it in fetch_playlist_items(&client, &token, &playlist_id).await? {
+        let vid = it
+            .pointer("/snippet/resourceId/videoId")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if vid.is_empty() {
+            continue;
         }
-        let res: serde_json::Value = client
-            .get("https://www.googleapis.com/youtube/v3/playlistItems")
-            .query(&q)
-            .bearer_auth(&token)
-            .send()
-            .await
-            .map_err(err)?
-            .json()
-            .await
-            .map_err(err)?;
-        if let Some(arr) = res.get("items").and_then(|x| x.as_array()) {
-            for it in arr {
-                let vid = it
-                    .pointer("/snippet/resourceId/videoId")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("");
-                if vid.is_empty() {
-                    continue;
-                }
-                let item_id = it.get("id").and_then(|x| x.as_str()).unwrap_or("");
-                let title = it
-                    .pointer("/snippet/title")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("");
-                let pos = it
-                    .pointer("/snippet/position")
-                    .and_then(|x| x.as_i64())
-                    .unwrap_or(items.len() as i64);
-                items.push((vid.to_string(), item_id.to_string(), title.to_string(), pos));
-            }
-        } else if let Some(e) = res.pointer("/error/message").and_then(|x| x.as_str()) {
-            return Err(e.to_string());
-        }
-        match res.get("nextPageToken").and_then(|x| x.as_str()) {
-            Some(t) => page = t.to_string(),
-            None => break,
-        }
+        let item_id = it.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let title = it
+            .pointer("/snippet/title")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let pos = it
+            .pointer("/snippet/position")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(items.len() as i64);
+        items.push((vid.to_string(), item_id.to_string(), title.to_string(), pos));
     }
     db.sync_playlist(&playlist_id, &playlist_title, &items)
         .await
@@ -1762,10 +1743,14 @@ pub fn run() {
             app.manage(db);
             // One shared HTTP client (30s timeout) for all outbound REST/OAuth
             // calls — reqwest::Client is Clone and pools connections internally.
-            // youtube_captions / import_youtube_playlist keep their own clients
-            // (custom user_agent); phoneme_import shells out to the CLI, not reqwest.
+            // youtube_captions / import_youtube_playlist set a custom User-Agent
+            // per request; phoneme_import shells out to the CLI, not reqwest.
+            // Redirects are disabled so youtube_captions' host allow-list is
+            // authoritative (no follow to an unvalidated host); none of the other
+            // callers (googleapis, oauth2, loopback REST) rely on redirects.
             let http = reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("build HTTP client");
             app.manage(http);
@@ -1823,9 +1808,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // On exit, truncate the WAL so ytnt.db-wal doesn't grow unbounded
-            // across sessions. Best-effort — ignore any error.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            // On the final Exit (not the cancellable, possibly-per-window
+            // ExitRequested), truncate the WAL so ytnt.db-wal doesn't grow
+            // unbounded across sessions. Best-effort — ignore any error.
+            if let tauri::RunEvent::Exit = event {
                 if let Some(db) = app.try_state::<Db>() {
                     let pool = db.pool.clone();
                     let _ = tauri::async_runtime::block_on(async move {

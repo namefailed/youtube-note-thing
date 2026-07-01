@@ -125,9 +125,8 @@ impl Db {
     }
 
     pub async fn set_tags(&self, id: &str, tags: &[String]) -> Result<(), sqlx::Error> {
-        let json = serde_json::to_string(tags).expect("Vec<String> is always serializable");
         sqlx::query("UPDATE videos SET tags = ? WHERE id = ?")
-            .bind(json)
+            .bind(Json(tags))
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -394,7 +393,7 @@ impl Db {
             .bind(v.duration)
             .bind(v.last_pos_secs)
             .bind(v.manual_order)
-            .bind(serde_json::to_string(&v.tags.0).expect("Vec<String> is always serializable"))
+            .bind(Json(&v.tags.0))
             .bind(v.ext_ref.as_deref())
             .execute(&mut *tx)
             .await?;
@@ -558,6 +557,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second, 1, "only the new id counts on re-import");
+    }
+
+    /// Notes sort by time until `reorder_notes` flips the video into manual mode
+    /// (then by `order_index`); `reset_order` reverts to time sort.
+    #[tokio::test]
+    async fn reorder_and_reset_note_order() {
+        let db = test_db().await;
+        db.upsert_video("v", "https://youtu.be/v").await.unwrap();
+        // Seed out of time order so the default sort is observable.
+        let n_late = db.create_note("v", 30.0, "late").await.unwrap();
+        let n_early = db.create_note("v", 10.0, "early").await.unwrap();
+        let n_mid = db.create_note("v", 20.0, "mid").await.unwrap();
+
+        // Default: time sort.
+        let by_time: Vec<String> = db
+            .list_notes("v")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.content)
+            .collect();
+        assert_eq!(by_time, ["early", "mid", "late"]);
+
+        // Manual reorder: reverse-time order.
+        db.reorder_notes(
+            "v",
+            vec![n_late.id.clone(), n_mid.id.clone(), n_early.id.clone()],
+        )
+        .await
+        .unwrap();
+        let manual: Vec<String> = db
+            .list_notes("v")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.content)
+            .collect();
+        assert_eq!(manual, ["late", "mid", "early"]);
+        assert!(
+            db.list_videos().await.unwrap()[0].manual_order,
+            "reorder_notes must flip manual_order true"
+        );
+
+        // Reset: back to time sort.
+        db.reset_order("v").await.unwrap();
+        let after_reset: Vec<String> = db
+            .list_notes("v")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.content)
+            .collect();
+        assert_eq!(after_reset, ["early", "mid", "late"]);
     }
 
     /// `sync_playlist` caches items (with the in_library join), and `delete_video`

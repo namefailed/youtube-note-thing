@@ -6,7 +6,7 @@
 # extends that to every unmaintained crate (direct or transitive).
 version = 2
 unmaintained = "all"
-yanked = "warn"
+yanked = "deny"
 
 [bans]
 # Warn (don't fail) when the same crate is pulled in at multiple versions.
