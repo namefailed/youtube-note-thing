@@ -789,8 +789,9 @@ export class App extends LitElement {
   private async exportJson() {
     const dbJson = await api.exportJson();
     const data = JSON.parse(dbJson);
-    // Include localStorage settings so a full backup survives a machine transfer.
-    try { data.settings = JSON.parse(localStorage.getItem("ytnt.settings") ?? "{}"); } catch { /**/ }
+    // Include localStorage settings so a full backup survives a machine transfer
+    // (minus credentials + the CLI path — see SENSITIVE_SETTINGS).
+    try { data.settings = stripSensitiveSettings(JSON.parse(localStorage.getItem("ytnt.settings") ?? "{}")); } catch { /**/ }
     try { data.tagColors = JSON.parse(localStorage.getItem("ytnt.tagColors") ?? "{}"); } catch { /**/ }
     download("ytnt-backup.json", JSON.stringify(data, null, 2), "application/json");
     this.flash("Exported backup", "ok");
@@ -802,7 +803,11 @@ export class App extends LitElement {
     // Restore settings/tagColors if the backup includes them (round-trip safe).
     try {
       const data = JSON.parse(raw);
-      if (data.settings && typeof data.settings === "object") localStorage.setItem("ytnt.settings", JSON.stringify(data.settings));
+      if (data.settings && typeof data.settings === "object") {
+        // Merge over current settings, never letting a backup overwrite the
+        // sensitive keys — this machine's credentials/CLI path stay intact.
+        localStorage.setItem("ytnt.settings", JSON.stringify({ ...loadSettings(), ...stripSensitiveSettings(data.settings) }));
+      }
       if (data.tagColors && typeof data.tagColors === "object") localStorage.setItem("ytnt.tagColors", JSON.stringify(data.tagColors));
     } catch { /**/ }
     const stats = await api.importJson(raw);
@@ -1565,7 +1570,7 @@ export class App extends LitElement {
             return html`
             <div class="libcard ${v.id === this.currentId ? "active" : ""} ${this.selected.has(v.id) ? "sel" : ""} ${this.freshVidIds.has(v.id) ? "fresh" : ""}" role="button" tabindex="0" aria-label=${v.title || v.id} title="Shift-click to select" ?aria-current=${v.id === this.currentId ? "true" : nothing} @click=${(e: MouseEvent) => (e.shiftKey ? this.toggleSelect(v.id) : this.toggleVideo(v.id, v.url))} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); if (e.shiftKey) this.toggleSelect(v.id); else this.toggleVideo(v.id, v.url); } }}>
               <div class="thumbwrap">
-                <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
+                <img class="thumb" loading="lazy" alt="" src=${`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`}
                   @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
                 ${v.duration ? html`<span class="durbadge">${formatTime(v.duration)}</span>` : nothing}
               </div>
@@ -2067,7 +2072,7 @@ export class App extends LitElement {
       <div class="tview-tabs">
         <button class="tab ${this.transcriptView === "transcript" ? "on" : ""}" aria-pressed=${this.transcriptView === "transcript"} @click=${() => (this.transcriptView = "transcript")}>Transcript</button>
         ${this.chapters.length ? html`<button class="tab ${this.transcriptView === "chapters" ? "on" : ""}" aria-pressed=${this.transcriptView === "chapters"} @click=${() => (this.transcriptView = "chapters")}>Chapters (${this.chapters.length})</button>` : nothing}
-        <button class="tab ${this.transcriptView === "compare" ? "on" : ""}" aria-pressed=${this.transcriptView === "compare"} @click=${() => (this.transcriptView = "compare")}>Compare${this.phonemeVersions.length > 1 ? ` (${this.phonemeVersions.length})` : ""}</button>
+        ${this.phonemeVersions.length > 1 || this.versionsError ? html`<button class="tab ${this.transcriptView === "compare" ? "on" : ""}" aria-pressed=${this.transcriptView === "compare"} @click=${() => (this.transcriptView = "compare")}>Compare${this.phonemeVersions.length > 1 ? ` (${this.phonemeVersions.length})` : ""}</button>` : nothing}
         <button class="tab ${this.transcriptView === "summary" ? "on" : ""}" aria-pressed=${this.transcriptView === "summary"} @click=${() => (this.transcriptView = "summary")}>Summary</button>
       </div>
       ${this.transcriptView === "summary" ? this.renderSummary()
@@ -2129,7 +2134,7 @@ export class App extends LitElement {
       </div>
       ${this.plItems.length ? this.plItems.map((it) => html`
         <div class="plcard ${it.video_id === this.currentId ? "active" : ""}" @click=${() => this.loadVideo(it.video_id)}>
-          <img class="thumb" loading="lazy" src=${`https://i.ytimg.com/vi/${it.video_id}/mqdefault.jpg`}
+          <img class="thumb" loading="lazy" alt="" src=${`https://i.ytimg.com/vi/${it.video_id}/mqdefault.jpg`}
             @error=${(e: Event) => ((e.target as HTMLElement).style.visibility = "hidden")} />
           <div class="meta"><div class="t" title=${it.title}>${it.title}</div></div>
           <button class="pl-toggle ${it.in_library ? "in" : ""}" title=${it.in_library ? "In your library — click to remove from library" : "Add to library"}
@@ -2634,6 +2639,15 @@ export class App extends LitElement {
   `;
 }
 
+// Never exported to or restored from a backup: credentials would leak in a
+// shared ytnt-backup.json, and phonemeBin is an executable path a crafted
+// backup must not be able to plant.
+const SENSITIVE_SETTINGS = ["gClientId", "gClientSecret", "phonemeBin"] as const;
+function stripSensitiveSettings<T extends Record<string, unknown>>(s: T): T {
+  const out = { ...s };
+  for (const k of SENSITIVE_SETTINGS) delete out[k];
+  return out;
+}
 function loadSettings(): Settings {
   const def: Settings = { offset: 3, autopause: true, vaultDir: "", theme: "catppuccin-mocha", stripTitlebar: false, gClientId: "", gClientSecret: "", hiddenPlaylists: [], phonemeBin: "", syncTags: true, phonemeRecipe: "", vimNav: false, arrowNav: false, keymapPreset: "default", keymapOverrides: {} };
   try { return { ...def, ...JSON.parse(localStorage.getItem("ytnt.settings") || "{}") }; }
