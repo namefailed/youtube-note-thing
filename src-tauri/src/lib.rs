@@ -13,17 +13,6 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-/// Shared HTTP client constructor — 30-second timeout applied to all outbound
-/// requests. Construct fresh per command (connection pooling is not needed at
-/// this call frequency); `phoneme_import` audio downloads get their own client
-/// with no timeout since download duration is unbounded.
-fn http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("HTTP client init failed: {e}"))
-}
-
 #[tauri::command]
 async fn list_videos(db: State<'_, Db>) -> Result<Vec<VideoWithCount>, String> {
     db.list_videos().await.map_err(err)
@@ -614,37 +603,58 @@ async fn phoneme_search(query: String) -> Result<Vec<PhonemeHit>, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// One `phoneme search` result. The recording fields may come flat on the row or
+/// nested under a `recording` field, so we deserialize both and prefer the wrapped
+/// one via [`SearchRow::rec`].
+#[derive(serde::Deserialize, Default)]
+struct SearchRec {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    transcript: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SearchRow {
+    #[serde(default)]
+    recording: Option<SearchRec>,
+    #[serde(flatten)]
+    flat: SearchRec,
+}
+
+impl SearchRow {
+    /// Phoneme may wrap the hit in a `recording` field or return it flat.
+    fn rec(self) -> SearchRec {
+        self.recording.unwrap_or(self.flat)
+    }
+}
+
 fn phoneme_search_blocking(query: &str) -> Result<Vec<PhonemeHit>, String> {
     let out = run_phoneme(&["--json", "search", "--limit", "10", "--", query])?;
     // parse_json_lines errors when there IS output but nothing parsed (contract drift).
-    let rows = parse_json_lines::<serde_json::Value>(&out, "search")?;
+    let rows = parse_json_lines::<SearchRow>(&out, "search")?;
     let hits = rows
         .into_iter()
-        .filter_map(|v| {
-            // Phoneme may wrap the hit in a `recording` field or return it flat.
-            let rec = v.get("recording").cloned().unwrap_or(v);
-            let id = rec
-                .get("id")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if id.is_empty() {
+        .filter_map(|row| {
+            let rec = row.rec();
+            if rec.id.is_empty() {
                 return None;
             }
-            let title = rec
-                .get("title")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let snippet: String = rec
-                .get("summary")
-                .and_then(|x| x.as_str())
-                .or_else(|| rec.get("transcript").and_then(|x| x.as_str()))
-                .unwrap_or_default()
-                .chars()
-                .take(140)
-                .collect();
-            Some(PhonemeHit { id, title, snippet })
+            let source = if rec.summary.is_empty() {
+                rec.transcript
+            } else {
+                rec.summary
+            };
+            let snippet: String = source.chars().take(140).collect();
+            Some(PhonemeHit {
+                id: rec.id,
+                title: rec.title,
+                snippet,
+            })
         })
         .collect();
     Ok(hits)
@@ -707,26 +717,39 @@ fn phoneme_ipc(req: serde_json::Value) -> Result<serde_json::Value, String> {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PhonemeEntity {
+    #[serde(default)]
     kind: String,
+    #[serde(default)]
     value: String,
 }
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PhonemeTask {
+    #[serde(default)]
     text: String,
+    #[serde(default)]
     done: bool,
 }
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PhonemeRec {
+    #[serde(default)]
     status: String,
+    #[serde(default)]
     title: String,
+    #[serde(default)]
     summary: String,
+    #[serde(default)]
     model: String,
+    #[serde(default, rename = "detected_language")]
     language: String,
+    #[serde(default)]
     duration_ms: i64,
+    #[serde(default, rename = "mean_confidence")]
     confidence: Option<f64>,
+    #[serde(default)]
     entities: Vec<PhonemeEntity>,
+    #[serde(default)]
     tasks: Vec<PhonemeTask>,
 }
 
@@ -739,56 +762,7 @@ async fn phoneme_recording(id: String) -> Result<PhonemeRec, String> {
 }
 
 fn phoneme_recording_blocking(id: &str) -> Result<PhonemeRec, String> {
-    let out = run_phoneme(&["--json", "show", "--", id])?;
-    let v: serde_json::Value = serde_json::from_str(out.trim()).map_err(err)?;
-    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let entities = v
-        .get("entities")
-        .and_then(|x| x.as_array())
-        .map(|arr| {
-            arr.iter()
-                .map(|e| PhonemeEntity {
-                    kind: e
-                        .get("kind")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    value: e
-                        .get("value")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let tasks = v
-        .get("tasks")
-        .and_then(|x| x.as_array())
-        .map(|arr| {
-            arr.iter()
-                .map(|t| PhonemeTask {
-                    text: t
-                        .get("text")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    done: t.get("done").and_then(|x| x.as_bool()).unwrap_or(false),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(PhonemeRec {
-        status: s("status"),
-        title: s("title"),
-        summary: s("summary"),
-        model: s("model"),
-        language: s("detected_language"),
-        duration_ms: v.get("duration_ms").and_then(|x| x.as_i64()).unwrap_or(0),
-        confidence: v.get("mean_confidence").and_then(|x| x.as_f64()),
-        entities,
-        tasks,
-    })
+    run_phoneme_json(&["show", "--", id])
 }
 
 #[derive(serde::Serialize)]
@@ -807,8 +781,11 @@ const PHONEME_REST_BASE: &str = "http://127.0.0.1:3737";
 
 /// Best-effort GET against phoneme-rest, parsed as JSON. `Err` when REST is off /
 /// unreachable / non-2xx — callers fall back to the pipe or degrade.
-async fn phoneme_rest_get(path: &str) -> Result<serde_json::Value, String> {
-    let resp = http_client()?
+async fn phoneme_rest_get(
+    client: &reqwest::Client,
+    path: &str,
+) -> Result<serde_json::Value, String> {
+    let resp = client
         .get(format!("{PHONEME_REST_BASE}{path}"))
         .send()
         .await
@@ -858,7 +835,10 @@ fn parse_versions(arr: &[serde_json::Value]) -> Vec<TranscriptVersion> {
 /// available + cross-platform), then phoneme-rest (`GET /api/recordings/:id/
 /// versions`), then the daemon named pipe (Windows-only) as a last resort.
 #[tauri::command]
-async fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> {
+async fn phoneme_versions(
+    client: State<'_, reqwest::Client>,
+    id: String,
+) -> Result<Vec<TranscriptVersion>, String> {
     // CLI first — needs no opt-in REST and no OS-specific pipe.
     let cli_id = id.clone();
     if let Ok(Ok(out)) = tauri::async_runtime::spawn_blocking(move || {
@@ -873,7 +853,7 @@ async fn phoneme_versions(id: String) -> Result<Vec<TranscriptVersion>, String> 
         }
     }
     // Then phoneme-rest (cross-platform when enabled).
-    if let Ok(v) = phoneme_rest_get(&format!("/api/recordings/{id}/versions")).await {
+    if let Ok(v) = phoneme_rest_get(&client, &format!("/api/recordings/{id}/versions")).await {
         if let Some(arr) = v.as_array() {
             return Ok(parse_versions(arr));
         }
@@ -1164,6 +1144,17 @@ fn now_secs() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+// OAuth tokens live in the OS keychain (not plaintext on disk) under this
+// service/account pair.
+const KEYRING_SERVICE: &str = "dev.ytnt.app";
+const KEYRING_ACCOUNT: &str = "google_tokens";
+
+fn keyring_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).map_err(err)
+}
+
+/// Legacy plaintext token file — only read for the one-time migration into the
+/// keychain (older builds wrote it here in the app data dir).
 fn tokens_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
@@ -1172,17 +1163,24 @@ fn tokens_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(dir.join("google_tokens.json"))
 }
 fn load_tokens(app: &AppHandle) -> Option<GoogleTokens> {
-    let p = tokens_path(app).ok()?;
-    std::fs::read_to_string(p)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-}
-fn save_tokens(app: &AppHandle, t: &GoogleTokens) -> Result<(), String> {
-    let p = tokens_path(app)?;
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).ok();
+    match keyring_entry().ok()?.get_password() {
+        Ok(json) => serde_json::from_str(&json).ok(),
+        // Nothing in the keychain — migrate a legacy plaintext file if present:
+        // store it in the keychain, delete the file, then return it.
+        Err(_) => {
+            let p = tokens_path(app).ok()?;
+            let json = std::fs::read_to_string(&p).ok()?;
+            let t: GoogleTokens = serde_json::from_str(&json).ok()?;
+            if save_tokens(app, &t).is_ok() {
+                let _ = std::fs::remove_file(&p);
+            }
+            Some(t)
+        }
     }
-    std::fs::write(p, serde_json::to_string(t).map_err(err)?).map_err(err)
+}
+fn save_tokens(_app: &AppHandle, t: &GoogleTokens) -> Result<(), String> {
+    let json = serde_json::to_string(t).map_err(err)?;
+    keyring_entry()?.set_password(&json).map_err(err)
 }
 
 /// Block until the OAuth redirect hits our loopback listener, then return the
@@ -1235,12 +1233,13 @@ fn wait_for_code(listener: TcpListener, expected_state: &str) -> Result<String, 
 }
 
 async fn exchange_code(
+    client: &reqwest::Client,
     cid: &str,
     secret: &str,
     code: &str,
     redirect: &str,
 ) -> Result<GoogleTokens, String> {
-    let res: serde_json::Value = http_client()?
+    let res: serde_json::Value = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("code", code),
@@ -1285,7 +1284,12 @@ async fn exchange_code(
 }
 
 /// A non-expired access token, refreshing via the stored refresh token if needed.
-async fn valid_access_token(app: &AppHandle, cid: &str, secret: &str) -> Result<String, String> {
+async fn valid_access_token(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cid: &str,
+    secret: &str,
+) -> Result<String, String> {
     let mut t = load_tokens(app).ok_or("Not connected to a Google account")?;
     if t.expires_at > now_secs() + 60 && !t.access_token.is_empty() {
         return Ok(t.access_token);
@@ -1294,7 +1298,7 @@ async fn valid_access_token(app: &AppHandle, cid: &str, secret: &str) -> Result<
         return Err("Session expired — reconnect your Google account".into());
     }
     let (cid, secret) = resolve_creds(cid.to_string(), secret.to_string())?;
-    let res: serde_json::Value = http_client()?
+    let res: serde_json::Value = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("client_id", cid.as_str()),
@@ -1338,9 +1342,16 @@ fn google_has_default() -> bool {
 
 #[tauri::command]
 fn google_logout(app: AppHandle) -> Result<(), String> {
-    let p = tokens_path(&app)?;
-    if p.exists() {
-        std::fs::remove_file(p).map_err(err)?;
+    // Remove the keychain entry (NoEntry is fine — already logged out).
+    match keyring_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(err(e)),
+    }
+    // Also clear any leftover legacy plaintext file.
+    if let Ok(p) = tokens_path(&app) {
+        if p.exists() {
+            std::fs::remove_file(p).map_err(err)?;
+        }
     }
     Ok(())
 }
@@ -1348,6 +1359,7 @@ fn google_logout(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn google_connect(
     app: AppHandle,
+    client: State<'_, reqwest::Client>,
     client_id: String,
     client_secret: String,
 ) -> Result<(), String> {
@@ -1374,7 +1386,7 @@ async fn google_connect(
     let code = tauri::async_runtime::spawn_blocking(move || wait_for_code(listener, &state))
         .await
         .map_err(err)??;
-    let tokens = exchange_code(&client_id, &client_secret, &code, &redirect).await?;
+    let tokens = exchange_code(&client, &client_id, &client_secret, &code, &redirect).await?;
     if tokens.refresh_token.is_empty() {
         return Err("Google did not return a refresh token. Remove this app from your Google account's third-party access and try again.".into());
     }
@@ -1425,6 +1437,7 @@ fn parse_iso8601_duration(s: &str) -> Option<i64> {
 async fn sync_video_meta(
     app: AppHandle,
     db: State<'_, Db>,
+    client: State<'_, reqwest::Client>,
     client_id: String,
     client_secret: String,
     ids: Vec<String>,
@@ -1432,8 +1445,7 @@ async fn sync_video_meta(
     if ids.is_empty() {
         return Ok(());
     }
-    let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = http_client()?;
+    let token = valid_access_token(&app, &client, &client_id, &client_secret).await?;
     for chunk in ids.chunks(50) {
         let id_param = chunk.join(",");
         let res: serde_json::Value = client
@@ -1497,11 +1509,12 @@ async fn sync_video_meta(
 #[tauri::command]
 async fn google_playlists(
     app: AppHandle,
+    client: State<'_, reqwest::Client>,
     client_id: String,
     client_secret: String,
 ) -> Result<Vec<GPlaylist>, String> {
-    let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let res: serde_json::Value = http_client()?
+    let token = valid_access_token(&app, &client, &client_id, &client_secret).await?;
+    let res: serde_json::Value = client
         .get("https://www.googleapis.com/youtube/v3/playlists")
         .query(&[
             ("part", "snippet,contentDetails"),
@@ -1549,12 +1562,12 @@ async fn google_playlists(
 async fn import_google_playlist(
     app: AppHandle,
     db: State<'_, Db>,
+    client: State<'_, reqwest::Client>,
     client_id: String,
     client_secret: String,
     playlist_id: String,
 ) -> Result<usize, String> {
-    let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = http_client()?;
+    let token = valid_access_token(&app, &client, &client_id, &client_secret).await?;
     let mut vids: Vec<(String, String)> = Vec::new();
     let mut page = String::new();
     loop {
@@ -1605,13 +1618,13 @@ async fn import_google_playlist(
 async fn google_sync_playlist(
     app: AppHandle,
     db: State<'_, Db>,
+    client: State<'_, reqwest::Client>,
     client_id: String,
     client_secret: String,
     playlist_id: String,
     playlist_title: String,
 ) -> Result<Vec<PlaylistItem>, String> {
-    let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let client = http_client()?;
+    let token = valid_access_token(&app, &client, &client_id, &client_secret).await?;
     let mut items: Vec<(String, String, String, i64)> = Vec::new();
     let mut page = String::new();
     loop {
@@ -1670,17 +1683,19 @@ async fn google_sync_playlist(
 /// Remove one entry from the real YouTube playlist (needs the full youtube scope),
 /// then drop it from the local cache.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command: args are the IPC surface + injected State.
 async fn google_remove_playlist_item(
     app: AppHandle,
     db: State<'_, Db>,
+    client: State<'_, reqwest::Client>,
     client_id: String,
     client_secret: String,
     playlist_id: String,
     video_id: String,
     item_id: String,
 ) -> Result<(), String> {
-    let token = valid_access_token(&app, &client_id, &client_secret).await?;
-    let res = http_client()?
+    let token = valid_access_token(&app, &client, &client_id, &client_secret).await?;
+    let res = client
         .delete("https://www.googleapis.com/youtube/v3/playlistItems")
         .query(&[("id", item_id.as_str())])
         .bearer_auth(&token)
@@ -1745,6 +1760,15 @@ pub fn run() {
             })
             .expect("initialize database");
             app.manage(db);
+            // One shared HTTP client (30s timeout) for all outbound REST/OAuth
+            // calls — reqwest::Client is Clone and pools connections internally.
+            // youtube_captions / import_youtube_playlist keep their own clients
+            // (custom user_agent); phoneme_import shells out to the CLI, not reqwest.
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("build HTTP client");
+            app.manage(http);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1796,8 +1820,22 @@ pub fn run() {
             google_remove_playlist_item,
             video_playlists,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // On exit, truncate the WAL so ytnt.db-wal doesn't grow unbounded
+            // across sessions. Best-effort — ignore any error.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(db) = app.try_state::<Db>() {
+                    let pool = db.pool.clone();
+                    let _ = tauri::async_runtime::block_on(async move {
+                        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                            .execute(&pool)
+                            .await
+                    });
+                }
+            }
+        });
 }
 
 #[cfg(test)]
